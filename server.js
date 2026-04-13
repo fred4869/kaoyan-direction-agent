@@ -1,4 +1,5 @@
 import "dotenv/config";
+import * as cheerio from "cheerio";
 import express from "express";
 import fs from "fs";
 import path from "path";
@@ -15,12 +16,13 @@ const dashscopeModel = process.env.DASHSCOPE_MODEL || "qwen-max-latest";
 const defaultSessionId = process.env.DEFAULT_SESSION_ID || "primary";
 const dataDir = path.join(__dirname, "data");
 const sessionFilePath = path.join(dataDir, `${defaultSessionId}-session.json`);
+const knowledgeBaseFilePath = path.join(dataDir, "knowledge-base.json");
 const maxWindowMessages = 10;
 const retainWindowMessages = 6;
 
 const primarySession = loadSession();
 const sessionCache = new Map([[defaultSessionId, primarySession]]);
-const knowledgeBase = buildKnowledgeBase();
+let knowledgeBase = loadKnowledgeBase();
 
 app.use(express.json({ limit: "1mb" }));
 app.use(express.static(path.join(__dirname, "public")));
@@ -39,6 +41,29 @@ app.get("/api/session/:sessionId", (req, res) => {
   res.json(buildSessionPayload(session));
 });
 
+app.get("/api/knowledge-base", (_req, res) => {
+  res.json({
+    count: knowledgeBase.length,
+    items: knowledgeBase,
+  });
+});
+
+app.post("/api/research/program", async (req, res) => {
+  try {
+    const school = String(req.body.school || "").trim();
+    const program = String(req.body.program || "").trim();
+
+    if (!school || !program) {
+      return res.status(400).json({ error: "school and program are required" });
+    }
+
+    const result = await researchProgramAndUpdateKnowledgeBase({ school, program });
+    res.json(result);
+  } catch (error) {
+    res.status(500).json({ error: error.message || "Research failed" });
+  }
+});
+
 app.post("/api/chat", async (req, res) => {
   try {
     const sessionId = String(req.body.sessionId || defaultSessionId);
@@ -49,6 +74,7 @@ app.post("/api/chat", async (req, res) => {
     }
 
     const session = getOrCreateSession(sessionId);
+    const researchUpdates = await maybeResearchFromMessage(userMessage);
     const userEntry = { role: "user", content: userMessage, timestamp: Date.now() };
     session.conversationLog.push(userEntry);
     session.conversationWindow.push(userEntry);
@@ -72,6 +98,7 @@ app.post("/api/chat", async (req, res) => {
     res.json({
       sessionId,
       reply: assistantMessage,
+      researchUpdates,
       ...buildSessionPayload(session),
     });
   } catch (error) {
@@ -161,6 +188,55 @@ function loadSession() {
     writeSession(seed);
     return seed;
   }
+}
+
+function loadKnowledgeBase() {
+  ensureDataDir();
+
+  if (!fs.existsSync(knowledgeBaseFilePath)) {
+    const seeded = buildKnowledgeBase();
+    fs.writeFileSync(knowledgeBaseFilePath, JSON.stringify(seeded, null, 2), "utf8");
+    return seeded;
+  }
+
+  try {
+    const raw = fs.readFileSync(knowledgeBaseFilePath, "utf8");
+    const parsed = JSON.parse(raw);
+    if (Array.isArray(parsed) && parsed.length > 0) {
+      const sanitized = sanitizeKnowledgeBase(parsed);
+      fs.writeFileSync(knowledgeBaseFilePath, JSON.stringify(sanitized, null, 2), "utf8");
+      return sanitized;
+    }
+  } catch {
+    // fall through to seed
+  }
+
+  const seeded = buildKnowledgeBase();
+  fs.writeFileSync(knowledgeBaseFilePath, JSON.stringify(seeded, null, 2), "utf8");
+  return seeded;
+}
+
+function sanitizeKnowledgeBase(items) {
+  const deduped = new Map();
+
+  for (const item of items) {
+    const cleanedSchool = cleanSchoolName(item.school || "");
+    if (!isValidSchoolName(cleanedSchool)) continue;
+
+    const normalized = {
+      ...item,
+      school: cleanedSchool,
+    };
+    const key = `${normalized.school}__${normalized.program}`;
+    deduped.set(key, normalized);
+  }
+
+  return [...deduped.values()];
+}
+
+function persistKnowledgeBase() {
+  ensureDataDir();
+  fs.writeFileSync(knowledgeBaseFilePath, JSON.stringify(knowledgeBase, null, 2), "utf8");
 }
 
 function persistSession(session) {
@@ -820,6 +896,322 @@ function buildRecommendations(candidates) {
       .sort((a, b) => b.score - a.score)
       .slice(0, 3),
   };
+}
+
+async function maybeResearchFromMessage(message) {
+  const requests = extractResearchRequests(message);
+  if (!requests.length) return [];
+
+  const updates = [];
+
+  for (const request of requests.slice(0, 2)) {
+    const exists = knowledgeBase.some(
+      (item) => item.school === request.school && item.program.includes(request.programKeyword),
+    );
+
+    if (exists) continue;
+
+    try {
+      const result = await researchProgramAndUpdateKnowledgeBase({
+        school: request.school,
+        program: request.programKeyword,
+      });
+      updates.push(result);
+    } catch (error) {
+      updates.push({
+        school: request.school,
+        program: request.programKeyword,
+        status: "error",
+        message: error.message || "Research failed",
+      });
+    }
+  }
+
+  return updates;
+}
+
+function extractResearchRequests(message) {
+  const schoolMatches = [...message.matchAll(/([\u4e00-\u9fa5]{2,20}?(?:大学|学院))/g)].map((match) => ({
+    school: cleanSchoolName(match[1]),
+    index: match.index || 0,
+  }));
+  const programKeywords = ["光电信息工程", "仪器仪表工程", "光学工程", "电子信息", "物理学", "光电"];
+  const programMatches = [];
+
+  for (const keyword of programKeywords) {
+    for (const match of message.matchAll(new RegExp(keyword, "g"))) {
+      programMatches.push({ programKeyword: keyword, index: match.index || 0 });
+    }
+  }
+
+  schoolMatches.sort((a, b) => a.index - b.index);
+  programMatches.sort((a, b) => a.index - b.index);
+
+  if (!schoolMatches.length || !programMatches.length) {
+    return [];
+  }
+
+  const requests = [];
+
+  for (let i = 0; i < schoolMatches.length; i += 1) {
+    const currentSchool = schoolMatches[i];
+    const nextSchoolIndex = schoolMatches[i + 1]?.index ?? Number.POSITIVE_INFINITY;
+    const candidateProgram =
+      programMatches.find((item) => item.index > currentSchool.index && item.index < nextSchoolIndex) ||
+      programMatches.find((item) => item.index >= currentSchool.index);
+
+    if (currentSchool.school && candidateProgram?.programKeyword) {
+      requests.push({
+        school: currentSchool.school,
+        programKeyword: candidateProgram.programKeyword,
+      });
+    }
+  }
+
+  return requests;
+}
+
+function cleanSchoolName(value) {
+  const cleaned = value
+    .replace(/^(我也想把|我想把|想把|把|看看|考虑|还有|以及|和)/, "")
+    .replace(/(放进考虑里|放进考虑|也纳入考虑|纳入考虑)$/, "")
+    .trim();
+
+  const splitByConjunction = cleaned.split(/[和及、，,\s]+/).filter(Boolean);
+  const tailCandidate = splitByConjunction[splitByConjunction.length - 1] || cleaned;
+  const tailMatch = tailCandidate.match(/([\u4e00-\u9fa5]{2,20}(?:大学|学院))$/);
+  return tailMatch ? tailMatch[1] : tailCandidate;
+}
+
+function isValidSchoolName(value) {
+  return /^[\u4e00-\u9fa5]{2,20}(?:大学|学院)$/.test(value) && !/(我也想把|物理学和|光学工程和)/.test(value);
+}
+
+async function researchProgramAndUpdateKnowledgeBase({ school, program }) {
+  const query = `${school} ${program} 硕士 研究生 招生 专业目录`;
+  const searchResults = await searchWeb(query);
+  const rankedResults = rankSearchResults(searchResults, school, program);
+
+  if (!rankedResults.length) {
+    return {
+      school,
+      program,
+      status: "not_found",
+      message: "未检索到可用来源",
+    };
+  }
+
+  const best = rankedResults[0];
+  const page = await fetchPageSummary(best.url);
+  const record = buildResearchedRecord({ school, program, best, page });
+  const merged = mergeKnowledgeRecord(record);
+
+  return {
+    school,
+    program,
+    status: "updated",
+    record: merged,
+  };
+}
+
+async function searchWeb(query) {
+  const url = `https://html.duckduckgo.com/html/?q=${encodeURIComponent(query)}`;
+  const response = await fetch(url, {
+    headers: {
+      "User-Agent": "Mozilla/5.0",
+    },
+  });
+
+  if (!response.ok) {
+    throw new Error(`Search failed: ${response.status}`);
+  }
+
+  const html = await response.text();
+  const $ = cheerio.load(html);
+  const results = [];
+
+  $(".result").each((_index, element) => {
+    const link = $(element).find(".result__a").first();
+    const title = link.text().trim();
+    const href = link.attr("href");
+    const snippet = $(element).find(".result__snippet").text().trim();
+
+    if (title && href) {
+      results.push({
+        title,
+        url: normalizeSearchResultUrl(href),
+        snippet,
+      });
+    }
+  });
+
+  return results;
+}
+
+function normalizeSearchResultUrl(url) {
+  try {
+    const parsed = url.startsWith("//") ? new URL(`https:${url}`) : new URL(url);
+    const uddg = parsed.searchParams.get("uddg");
+    return uddg ? decodeURIComponent(uddg) : url;
+  } catch {
+    return url;
+  }
+}
+
+function rankSearchResults(results, school, program) {
+  return results
+    .map((item) => {
+      let score = 0;
+      if (item.title.includes(school) || item.snippet.includes(school)) score += 20;
+      if (item.title.includes(program) || item.snippet.includes(program)) score += 18;
+      if (/研究生|招生|专业目录|简章/.test(item.title + item.snippet)) score += 10;
+      if (isOfficialDomain(item.url)) score += 25;
+      if (/m\.koolearn|xdf|kaoyan/.test(item.url)) score -= 5;
+
+      return { ...item, score };
+    })
+    .filter((item) => item.score >= 20)
+    .sort((a, b) => b.score - a.score)
+    .slice(0, 5);
+}
+
+function isOfficialDomain(url) {
+  try {
+    const { hostname } = new URL(url);
+    return /\.edu\.cn$/.test(hostname) || /\.ac\.cn$/.test(hostname);
+  } catch {
+    return false;
+  }
+}
+
+async function fetchPageSummary(url) {
+  const response = await fetch(url, {
+    headers: {
+      "User-Agent": "Mozilla/5.0",
+    },
+  });
+
+  if (!response.ok) {
+    throw new Error(`Fetch failed: ${response.status}`);
+  }
+
+  const html = await response.text();
+  const $ = cheerio.load(html);
+  const title = $("title").text().trim();
+  const bodyText = $("body").text().replace(/\s+/g, " ").trim();
+  return {
+    title,
+    excerpt: bodyText.slice(0, 1200),
+  };
+}
+
+function buildResearchedRecord({ school, program, best, page }) {
+  const nowYear = new Date().getFullYear();
+  const titleText = `${best.title} ${page.title} ${best.snippet} ${page.excerpt}`;
+  const detectedDegreeType = /专业学位|专硕|0854|085407|085408|085400/.test(titleText) ? "专硕" : "学硕";
+  const detectedProgram = detectProgramName(program, titleText);
+  const detectedCity = detectCity(titleText, school);
+  const detectedCollege = detectCollege(titleText);
+  const detectedExam = detectExamSubjects(titleText);
+
+  return {
+    school,
+    city: detectedCity,
+    program: detectedProgram,
+    college: detectedCollege,
+    degreeType: detectedDegreeType,
+    exam: detectedExam,
+    tags: buildTagsFromProgram(detectedProgram, detectedDegreeType, detectedCity),
+    difficulty: 70,
+    experience: "该项目为最新联网检索补录，体验类结论需继续结合导师、复试细则和往届反馈完善。",
+    employment: "就业导向需进一步结合学院平台和城市产业情况补充。",
+    sourceType: isOfficialDomain(best.url) ? "official" : "secondary",
+    sourceUrl: best.url,
+    verifiedYear: extractYear(titleText) || nowYear,
+    confidence: isOfficialDomain(best.url) ? "medium" : "low",
+    evidenceNote: `由系统根据检索结果自动补录，来源标题：${best.title}`,
+  };
+}
+
+function mergeKnowledgeRecord(record) {
+  const index = knowledgeBase.findIndex(
+    (item) => item.school === record.school && item.program === record.program,
+  );
+
+  if (index >= 0) {
+    const current = knowledgeBase[index];
+    const preferNew =
+      (record.verifiedYear || 0) > (current.verifiedYear || 0) ||
+      (record.sourceType === "official" && current.sourceType !== "official");
+
+    knowledgeBase[index] = preferNew ? { ...current, ...record } : current;
+  } else {
+    knowledgeBase.push(record);
+  }
+
+  persistKnowledgeBase();
+  return knowledgeBase[index >= 0 ? index : knowledgeBase.length - 1];
+}
+
+function detectProgramName(programKeyword, text) {
+  const knownPrograms = ["070200 物理学", "080300 光学工程", "085408 光电信息工程", "085407 仪器仪表工程", "085400 电子信息"];
+  const exact = knownPrograms.find((item) => text.includes(item) || text.includes(item.split(" ")[1]));
+  if (exact) return exact;
+  if (programKeyword === "光电") return "085408 光电信息工程";
+  return /^\d{6}/.test(programKeyword) ? programKeyword : programKeyword;
+}
+
+function detectCity(text, school) {
+  const pairs = [
+    ["南京", "南京"],
+    ["苏州", "苏州"],
+    ["成都", "成都"],
+    ["长沙", "长沙"],
+    ["杭州", "杭州"],
+  ];
+  const matched = pairs.find(([keyword]) => text.includes(keyword));
+  if (matched) return matched[1];
+  if (school.includes("南京")) return "南京";
+  if (school.includes("苏州")) return "苏州";
+  if (school.includes("四川") || school.includes("电子科技")) return "成都";
+  if (school.includes("中南")) return "长沙";
+  if (school.includes("计量")) return "杭州";
+  return "待补";
+}
+
+function detectCollege(text) {
+  const colleges = ["物理学院", "航天学院", "电子工程与光电技术学院", "物理科学与技术学院", "光电科学与工程学院", "电子信息学院", "物理与光电工程学院"];
+  return colleges.find((item) => text.includes(item)) || "待补";
+}
+
+function detectExamSubjects(text) {
+  const parts = [];
+  if (/英语[（(]一[）)]|英一|201/.test(text)) parts.push("英一");
+  if (/英语[（(]二[）)]|英二|204/.test(text)) parts.push("英二");
+  if (/数学[（(]一[）)]|数一|301/.test(text)) parts.push("数一");
+  if (/数学[（(]二[）)]|数二|302/.test(text)) parts.push("数二");
+  if (/普通物理|普物/.test(text)) parts.push("普物");
+  if (/量子力学/.test(text)) parts.push("量子力学");
+  if (/信号与系统/.test(text)) parts.push("信号与系统");
+  if (/应用光学/.test(text)) parts.push("应用光学");
+  return parts.join(" ") || "待补";
+}
+
+function buildTagsFromProgram(program, degreeType, city) {
+  const tags = [];
+  if (/物理学/.test(program)) tags.push("物理学");
+  if (/光学工程/.test(program)) tags.push("光学工程");
+  if (/光电信息工程|光电/.test(program)) tags.push("光电");
+  if (/电子信息/.test(program)) tags.push("电子信息");
+  if (/仪器仪表工程/.test(program)) tags.push("仪器");
+  if (degreeType) tags.push(degreeType);
+  if (city === "南京" || city === "苏州") tags.push("江苏");
+  return [...new Set(tags)];
+}
+
+function extractYear(text) {
+  const match = text.match(/20\d{2}/);
+  return match ? Number(match[0]) : null;
 }
 
 function extractNumberChunk(text, pattern) {

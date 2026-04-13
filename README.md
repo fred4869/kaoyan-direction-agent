@@ -12,6 +12,7 @@
 - 单用户本地文件持久化
 - 分层记忆与历史压缩
 - 带来源、年份、可信度的核验知识库
+- 新学校/新专业的联网检索与自动入库
 
 ## 启动
 
@@ -77,3 +78,17 @@ npm run dev
 - `evidenceNote`
 
 其中优先使用学校研究生院或学院官方目录页；当只拿到公开整理页时，会明确标记为 `secondary`，并在界面上提示正式报考前复核官方目录。
+
+## 动态检索
+
+当用户把新的学校或专业纳入考虑时，后端支持：
+
+- 联网检索最新招生目录或相关页面
+- 优先选择官方域名结果
+- 自动生成结构化记录
+- 写回本地 [data/knowledge-base.json](/Users/alfred/codex/kaoyan-agent/data/knowledge-base.json)
+
+接口：
+
+- `POST /api/research/program`
+- 聊天接口 `POST /api/chat` 也会对新学校/专业尝试自动补录

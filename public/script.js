@@ -25,6 +25,7 @@ const state = {
     candidates_ready: false,
     recommendation_ready: false,
   },
+  researchUpdates: [],
 };
 
 init();
@@ -99,6 +100,16 @@ async function onSubmit(event) {
     }
 
     applySession(data);
+    if (Array.isArray(data.researchUpdates) && data.researchUpdates.length) {
+      const note = data.researchUpdates
+        .map((item) =>
+          item.status === "updated"
+            ? `已联网补录：${item.record.school} ${item.record.program}`
+            : `检索未完成：${item.school} ${item.program} (${item.message})`,
+        )
+        .join("\n");
+      pushMessage({ role: "assistant", content: note });
+    }
   } catch (error) {
     pushMessage({
       role: "assistant",
