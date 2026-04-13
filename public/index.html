@@ -1,0 +1,77 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <title>考研方向规划 Agent</title>
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body>
+    <div class="app-shell">
+      <header class="topbar">
+        <div>
+          <p class="eyebrow">河海大学物理 · 考研方向规划</p>
+          <h1>聊天优先的决策顾问</h1>
+        </div>
+        <button id="stageBadge" class="stage-badge" type="button">初始建档</button>
+      </header>
+
+      <main class="chat-screen">
+        <section id="messages" class="messages" aria-live="polite"></section>
+      </main>
+
+      <nav id="floatingActions" class="floating-actions hidden" aria-label="补充面板入口">
+        <button id="openProfile" class="fab secondary hidden" type="button">查看我的画像</button>
+        <button id="openCandidates" class="fab secondary hidden" type="button">查看候选</button>
+        <button id="openRecommendations" class="fab primary hidden" type="button">查看建议</button>
+      </nav>
+
+      <form id="chatForm" class="input-bar">
+        <div class="quick-actions">
+          <button type="button" class="chip" data-prompt="我现在大三，想留江苏，英语一般，数学一般。">快速建档</button>
+          <button type="button" class="chip" data-prompt="我更看重就业，但不想考得太难。">偏好澄清</button>
+          <button type="button" class="chip" data-prompt="可以先给我第一批候选方向。">开始推荐</button>
+        </div>
+        <div class="composer">
+          <textarea id="messageInput" rows="1" placeholder="直接告诉我你的情况，我会一步步帮你缩小方向"></textarea>
+          <button id="sendButton" type="submit">发送</button>
+        </div>
+      </form>
+    </div>
+
+    <aside id="profileSheet" class="sheet hidden" aria-hidden="true">
+      <div class="sheet-backdrop" data-close="profileSheet"></div>
+      <section class="sheet-panel">
+        <header class="sheet-header">
+          <h2>我理解的你</h2>
+          <button class="icon-button" type="button" data-close="profileSheet">关闭</button>
+        </header>
+        <div id="profileSummary" class="summary-list"></div>
+      </section>
+    </aside>
+
+    <aside id="candidateSheet" class="sheet hidden" aria-hidden="true">
+      <div class="sheet-backdrop" data-close="candidateSheet"></div>
+      <section class="sheet-panel">
+        <header class="sheet-header">
+          <h2>候选院校</h2>
+          <button class="icon-button" type="button" data-close="candidateSheet">关闭</button>
+        </header>
+        <div id="candidateList" class="card-list"></div>
+      </section>
+    </aside>
+
+    <aside id="recommendationSheet" class="sheet hidden" aria-hidden="true">
+      <div class="sheet-backdrop" data-close="recommendationSheet"></div>
+      <section class="sheet-panel">
+        <header class="sheet-header">
+          <h2>分层建议</h2>
+          <button class="icon-button" type="button" data-close="recommendationSheet">关闭</button>
+        </header>
+        <div id="recommendationList" class="recommendation-groups"></div>
+      </section>
+    </aside>
+
+    <script type="module" src="/script.js"></script>
+  </body>
+  </html>
