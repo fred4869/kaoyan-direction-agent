@@ -19,6 +19,7 @@ const maxWindowMessages = 10;
 const retainWindowMessages = 6;
 
 const primarySession = loadSession();
+const sessionCache = new Map([[defaultSessionId, primarySession]]);
 const knowledgeBase = buildKnowledgeBase();
 
 app.use(express.json({ limit: "1mb" }));
@@ -134,7 +135,13 @@ function createSession() {
 }
 
 function getOrCreateSession(sessionId) {
-  return sessionId === defaultSessionId ? primarySession : primarySession;
+  if (sessionCache.has(sessionId)) {
+    return sessionCache.get(sessionId);
+  }
+
+  const session = createSession();
+  sessionCache.set(sessionId, session);
+  return session;
 }
 
 function loadSession() {
@@ -157,7 +164,10 @@ function loadSession() {
 }
 
 function persistSession(session) {
-  writeSession(normalizeSession(session));
+  const normalized = normalizeSession(session);
+  if (session === primarySession) {
+    writeSession(normalized);
+  }
 }
 
 function writeSession(session) {
@@ -242,7 +252,7 @@ function updateSessionFromMessage(session, message) {
   if (/排名|前\d+%|前百分之/.test(message)) {
     profile.ranking = extractRanking(message) || profile.ranking;
   }
-  if (/英语.*六级|六级|cet[-\s]?6|考研英语/.test(text)) {
+  if (/英语|六级|四级|cet[-\s]?[46]|考研英语/.test(text)) {
     profile.englishLevel = summarizeEnglish(message);
   }
   if (/数学|高数|数一|数二/.test(message)) {
@@ -263,7 +273,7 @@ function updateSessionFromMessage(session, message) {
   if (/稳|保守|冲一冲|想冲|求稳|能接受调剂|不想太难/.test(message)) {
     profile.riskTolerance = extractRiskTolerance(message);
   }
-  if (/家里|预算|不想离家|不能|必须|接受不了/.test(message)) {
+  if (/家里|预算|不想离家|不能|必须|接受不了|不想纯物理|不太想纯物理|不考虑纯物理/.test(message)) {
     profile.constraints = dedupe([...profile.constraints, message]);
   }
 
@@ -518,8 +528,7 @@ function isRecommendationReady(profile) {
       profile.englishLevel &&
       profile.locations.length &&
       profile.degreePreference &&
-      profile.careerPreference &&
-      profile.riskTolerance,
+      profile.careerPreference,
   );
 }
 
@@ -680,8 +689,14 @@ function scoreCandidates(profile, programs) {
       const interestMatched = hasInterestPreference
         ? profile.interest.some((interest) => item.tags.some((tag) => tag.includes(interest) || interest.includes(tag)))
         : false;
+      const wantsJiangsu = profile.locations.includes("江苏");
+      const strongJiangsuPreference = wantsJiangsu && profile.constraints.some((item) => /留在江苏|尽量留江苏|最好留江苏/.test(item));
+      const isJiangsuProgram = /南京|苏州/.test(item.city);
+      const theoryHeavyExam = /量子力学|普物/.test(item.exam);
+      const avoidsPurePhysics = profile.constraints.some((item) => /不想纯物理|不太想纯物理|不考虑纯物理/.test(item));
 
-      if (profile.locations.includes("江苏") && item.city.match(/南京|苏州/)) score += 10;
+      if (wantsJiangsu && isJiangsuProgram) score += 10;
+      if (wantsJiangsu && !isJiangsuProgram) score -= strongJiangsuPreference ? 12 : 4;
       if (profile.locations.includes("成都") && item.city === "成都") score += 6;
       if (profile.degreePreference === "学硕优先" && item.degreeType === "学硕") score += 8;
       if (profile.degreePreference === "专硕优先" && item.degreeType === "专硕") score += 8;
@@ -692,14 +707,19 @@ function scoreCandidates(profile, programs) {
       if (hasInterestPreference && !interestMatched) score -= 12;
       if (profile.careerPreference === "就业优先" && item.tags.includes("专硕")) score += 8;
       if (profile.careerPreference === "就业优先" && item.degreeType === "学硕") score -= 4;
+      if (profile.careerPreference === "就业优先" && theoryHeavyExam) score -= 6;
       if (profile.careerPreference === "科研/读博优先" && item.degreeType === "学硕") score += 8;
+      if (profile.careerPreference === "科研/读博优先" && theoryHeavyExam) score += 4;
       if (profile.riskTolerance === "求稳" && item.difficulty <= 70) score += 10;
       if (profile.riskTolerance === "愿意冲" && item.difficulty >= 78) score += 8;
+      if (avoidsPurePhysics && item.tags.includes("物理学")) score -= 18;
       if (profile.mathLevel.includes("数一")) {
         if (item.exam.includes("数一")) score += 6;
       } else if (profile.mathLevel) {
         if (item.exam.includes("数一")) score -= 6;
       }
+      if (profile.mathLevel.includes("数学偏弱") && theoryHeavyExam) score -= 6;
+      if (profile.mathLevel.includes("对数一有顾虑") && item.exam.includes("数一")) score -= 6;
 
       return {
         ...item,
@@ -711,17 +731,18 @@ function scoreCandidates(profile, programs) {
 }
 
 function buildRecommendations(candidates) {
+  const qualifiedCandidates = candidates.filter((item) => item.score >= 68);
   return {
-    sprint: candidates
+    sprint: qualifiedCandidates
       .filter((item) => item.difficulty >= 80)
       .sort((a, b) => b.score - a.score)
       .slice(0, 2),
-    match: candidates
+    match: qualifiedCandidates
       .filter((item) => item.difficulty >= 68 && item.difficulty < 80)
       .sort((a, b) => b.score - a.score)
       .slice(0, 3),
-    safe: candidates
-      .filter((item) => item.difficulty < 68)
+    safe: qualifiedCandidates
+      .filter((item) => item.difficulty < 68 && item.score >= 72)
       .sort((a, b) => b.score - a.score)
       .slice(0, 3),
   };
@@ -743,6 +764,7 @@ function extractRanking(text) {
 }
 
 function summarizeEnglish(text) {
+  if (/英语.*不错|英语不错|英语较强|英语还可以/.test(text)) return "英语较强";
   if (/六级.*5\d{2}|cet.*5\d{2}/i.test(text)) return "英语较强";
   if (/四级|六级/.test(text)) return "英语有基础";
   if (/英语一般|英语弱/.test(text)) return "英语偏弱";
@@ -750,10 +772,10 @@ function summarizeEnglish(text) {
 }
 
 function summarizeMath(text) {
-  if (/数一.*犹豫|犹豫.*数一|不想考数一|怕数一|数一压力大/.test(text)) return "更适合数二/对数一有顾虑";
-  if (/高数不错|数学强|数学还可以/.test(text)) return "可承受数一/数学较强";
+  if (/数一.*犹豫|犹豫.*数一|不想考数一|不想碰数一|怕数一|数一压力大/.test(text)) return "更适合数二/对数一有顾虑";
+  if (/高数不错|数学不错|数学强|数学还可以|数学都不错/.test(text)) return "可承受数一/数学较强";
   if (/数二|数学一般/.test(text)) return "更适合数二/数学一般";
-  if (/数学弱|高数差/.test(text)) return "数学偏弱";
+  if (/数学弱|数学偏弱|高数差/.test(text)) return "数学偏弱";
   return "数学待细化";
 }
 
@@ -786,7 +808,7 @@ function extractCareerPreference(text) {
 }
 
 function extractRiskTolerance(text) {
-  if (/稳|保守|不想太难|求稳/.test(text)) return "求稳";
+  if (/稳|保守|不想太难|求稳|上岸优先|更看重上岸|稳妥/.test(text)) return "求稳";
   if (/冲|想拼|可以难一点/.test(text)) return "愿意冲";
   return "";
 }
