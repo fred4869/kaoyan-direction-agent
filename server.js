@@ -48,7 +48,9 @@ app.post("/api/chat", async (req, res) => {
     }
 
     const session = getOrCreateSession(sessionId);
-    session.conversationWindow.push({ role: "user", content: userMessage, timestamp: Date.now() });
+    const userEntry = { role: "user", content: userMessage, timestamp: Date.now() };
+    session.conversationLog.push(userEntry);
+    session.conversationWindow.push(userEntry);
 
     updateSessionFromMessage(session, userMessage);
     maybeUnlockCandidates(session);
@@ -59,7 +61,9 @@ app.post("/api/chat", async (req, res) => {
       ? await generateDashScopeReply(session, userMessage)
       : generateLocalReply(session);
 
-    session.conversationWindow.push({ role: "assistant", content: assistantMessage, timestamp: Date.now() });
+    const assistantEntry = { role: "assistant", content: assistantMessage, timestamp: Date.now() };
+    session.conversationLog.push(assistantEntry);
+    session.conversationWindow.push(assistantEntry);
     compressConversation(session);
     refreshWorkingMemory(session);
     persistSession(session);
@@ -96,6 +100,7 @@ function createSession() {
       recommendation_ready: false,
     },
     panels_available: [],
+    conversationLog: [initialMessage],
     conversationWindow: [initialMessage],
     conversationArchive: [],
     workingMemory: {
@@ -178,6 +183,7 @@ function normalizeSession(session) {
   normalized.candidatePrograms = session.candidatePrograms || normalized.candidatePrograms;
   normalized.recommendations = session.recommendations || normalized.recommendations;
   normalized.updatedAt = session.updatedAt || normalized.updatedAt;
+  normalized.conversationLog = session.conversationLog || session.messages || normalized.conversationLog;
   normalized.conversationWindow = session.conversationWindow || session.messages || normalized.conversationWindow;
   normalized.conversationArchive = session.conversationArchive || normalized.conversationArchive;
   normalized.workingMemory = session.workingMemory || normalized.workingMemory;
@@ -196,7 +202,7 @@ function buildSessionPayload(session) {
     panels_available: session.panels_available,
     candidatePrograms: session.candidatePrograms.slice(0, 8),
     recommendations: session.recommendations,
-    messages: session.conversationWindow,
+    messages: session.conversationLog,
     memory: {
       currentFocus: session.workingMemory.currentFocus,
       confirmedFacts: session.workingMemory.confirmedFacts,
@@ -298,12 +304,11 @@ function maybeUnlockCandidates(session) {
 function maybeUnlockRecommendations(session) {
   if (!session.flags.candidates_ready) return;
 
-  const profile = session.profile;
-  const readySignals = [profile.mathLevel, profile.englishLevel, profile.careerPreference, profile.riskTolerance]
-    .filter(Boolean)
-    .length;
-
-  if (readySignals < 3) return;
+  if (!isRecommendationReady(session.profile)) {
+    session.flags.recommendation_ready = false;
+    session.recommendations = null;
+    return;
+  }
 
   session.recommendations = buildRecommendations(session.candidatePrograms);
   session.flags.recommendation_ready = true;
@@ -319,14 +324,11 @@ function ensurePanel(session, panel) {
 
 function refreshWorkingMemory(session) {
   const confirmedFacts = buildProfileSummary(session.profile);
+  const priorityCandidates = getPriorityCandidates(session);
 
-  if (session.candidatePrograms.length) {
+  if (priorityCandidates.length) {
     confirmedFacts.push(
-      "当前优先候选：" +
-        session.candidatePrograms
-          .slice(0, 3)
-          .map((item) => `${item.school}${item.program}`)
-          .join("、"),
+      "当前优先候选：" + priorityCandidates.map((item) => `${item.school}${item.program}`).join("、"),
     );
   }
 
@@ -366,7 +368,7 @@ function inferCurrentFocus(session) {
 }
 
 function buildWorkingSummary(session, latestMessages) {
-  const topCandidates = session.candidatePrograms
+  const topCandidates = getPriorityCandidates(session)
     .slice(0, 2)
     .map((item) => `${item.school}${item.program}`)
     .join("、");
@@ -433,7 +435,6 @@ async function generateDashScopeReply(session, userMessage) {
           role: item.role,
           content: item.content,
         })),
-        { role: "user", content: userMessage },
       ],
     }),
   });
@@ -495,7 +496,8 @@ function generateLocalReply(session) {
 
   if (session.flags.candidates_ready && !session.flags.recommendation_ready) {
     const top = session.candidatePrograms.slice(0, 3).map((item) => `${item.school}${item.program}`).join("、");
-    return `我已经能给出第一批候选了，当前比较贴近你的有 ${top}。但我还不想过早定结论，因为学硕/专硕接受度、数学承受力和就业取向会继续改变排序。你接下来可以直接告诉我：你能不能接受数一，和你是否排斥专硕。`;
+    const missing = session.workingMemory.openQuestions.slice(0, 2).join("、");
+    return `我已经能给出第一批候选了，当前比较贴近你的有 ${top}。但我还不想过早定结论，因为还有 ${missing || "几个关键信息"} 没确认，它们会继续改变排序。你下一条直接补这部分，我再把建议收紧。`;
   }
 
   const topMatch = session.recommendations?.match?.[0];
@@ -506,6 +508,31 @@ function generateLocalReply(session) {
   }
 
   return `基于目前信息，我已经形成分层建议。你现在最值得优先深挖的是 ${topMatch ? `${topMatch.school}${topMatch.program}` : "匹配档项目"}。如果你愿意，我下一轮可以继续把每个候选拆开讲清楚：考试科目难点、读研体验、就业出口、以及为什么它比另外几个更适合你。`;
+}
+
+function isRecommendationReady(profile) {
+  return Boolean(
+    profile.year &&
+      (profile.gpa || profile.ranking) &&
+      profile.mathLevel &&
+      profile.englishLevel &&
+      profile.locations.length &&
+      profile.degreePreference &&
+      profile.careerPreference &&
+      profile.riskTolerance,
+  );
+}
+
+function getPriorityCandidates(session) {
+  if (!session.recommendations) {
+    return session.candidatePrograms.slice(0, 3);
+  }
+
+  return [
+    ...(session.recommendations.match || []),
+    ...(session.recommendations.sprint || []),
+    ...(session.recommendations.safe || []),
+  ].slice(0, 3);
 }
 
 function buildKnowledgeBase() {
@@ -649,14 +676,22 @@ function scoreCandidates(profile, programs) {
   return programs
     .map((item) => {
       let score = 60;
+      const hasInterestPreference = profile.interest.length > 0;
+      const interestMatched = hasInterestPreference
+        ? profile.interest.some((interest) => item.tags.some((tag) => tag.includes(interest) || interest.includes(tag)))
+        : false;
 
       if (profile.locations.includes("江苏") && item.city.match(/南京|苏州/)) score += 10;
       if (profile.locations.includes("成都") && item.city === "成都") score += 6;
       if (profile.degreePreference === "学硕优先" && item.degreeType === "学硕") score += 8;
       if (profile.degreePreference === "专硕优先" && item.degreeType === "专硕") score += 8;
+      if (profile.degreePreference === "专硕优先" && item.degreeType === "学硕") score -= 6;
+      if (profile.degreePreference === "学硕优先" && item.degreeType === "专硕") score -= 6;
       if (profile.degreePreference === "都可以") score += 4;
-      if (profile.interest.some((interest) => item.tags.some((tag) => tag.includes(interest) || interest.includes(tag)))) score += 10;
+      if (interestMatched) score += 12;
+      if (hasInterestPreference && !interestMatched) score -= 12;
       if (profile.careerPreference === "就业优先" && item.tags.includes("专硕")) score += 8;
+      if (profile.careerPreference === "就业优先" && item.degreeType === "学硕") score -= 4;
       if (profile.careerPreference === "科研/读博优先" && item.degreeType === "学硕") score += 8;
       if (profile.riskTolerance === "求稳" && item.difficulty <= 70) score += 10;
       if (profile.riskTolerance === "愿意冲" && item.difficulty >= 78) score += 8;
@@ -677,9 +712,18 @@ function scoreCandidates(profile, programs) {
 
 function buildRecommendations(candidates) {
   return {
-    sprint: candidates.filter((item) => item.difficulty >= 80).slice(0, 2),
-    match: candidates.filter((item) => item.difficulty >= 68 && item.difficulty < 80).slice(0, 3),
-    safe: candidates.filter((item) => item.difficulty < 68).slice(0, 3),
+    sprint: candidates
+      .filter((item) => item.difficulty >= 80)
+      .sort((a, b) => b.score - a.score)
+      .slice(0, 2),
+    match: candidates
+      .filter((item) => item.difficulty >= 68 && item.difficulty < 80)
+      .sort((a, b) => b.score - a.score)
+      .slice(0, 3),
+    safe: candidates
+      .filter((item) => item.difficulty < 68)
+      .sort((a, b) => b.score - a.score)
+      .slice(0, 3),
   };
 }
 
