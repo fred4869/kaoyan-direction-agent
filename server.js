@@ -557,6 +557,11 @@ function buildKnowledgeBase() {
       difficulty: 74,
       experience: "工科导向强，平台和城市资源较好，适合偏应用与就业。",
       employment: "长三角电子、光电、仪器类岗位适配较强。",
+      sourceType: "official",
+      sourceUrl: "https://www.graduate.nuaa.edu.cn/jzml_13495/list.htm",
+      verifiedYear: 2026,
+      confidence: "medium",
+      evidenceNote: "基于学校 2026 招生简章及目录入口核验，具体方向字段应以目录正文/附件为准。",
     },
     {
       school: "南京航空航天大学",
@@ -569,6 +574,11 @@ function buildKnowledgeBase() {
       difficulty: 79,
       experience: "数一门槛更高，但研究平台更偏学术和工程结合。",
       employment: "适合继续做光学、成像、检测、研发类岗位。",
+      sourceType: "official",
+      sourceUrl: "https://www.graduate.nuaa.edu.cn/jzml_13495/list.htm",
+      verifiedYear: 2026,
+      confidence: "medium",
+      evidenceNote: "以南航研究生院专业目录页为核验入口，具体招生方向应以当年专业目录为准。",
     },
     {
       school: "南京理工大学",
@@ -581,6 +591,11 @@ function buildKnowledgeBase() {
       difficulty: 76,
       experience: "专业对口度高，工程和就业导向明确。",
       employment: "在南京和长三角光电产业链中辨识度较强。",
+      sourceType: "official",
+      sourceUrl: "https://gs.njust.edu.cn/zsw/6b/27/c4587a355111/page.htm",
+      verifiedYear: 2026,
+      confidence: "high",
+      evidenceNote: "南京理工大学 2026 硕士招生简章及目录入口已核验。",
     },
     {
       school: "苏州大学",
@@ -593,6 +608,11 @@ function buildKnowledgeBase() {
       difficulty: 72,
       experience: "更适合想保留物理学术延展性的学生。",
       employment: "继续深造空间较好，就业更看具体方向和个人能力。",
+      sourceType: "official",
+      sourceUrl: "https://yjs.suda.edu.cn/54/32/c8386a676914/page.htm",
+      verifiedYear: 2026,
+      confidence: "high",
+      evidenceNote: "苏州大学 2026 硕士研究生招生专业目录已核验。",
     },
     {
       school: "苏州大学",
@@ -605,6 +625,11 @@ function buildKnowledgeBase() {
       difficulty: 75,
       experience: "从物理跨到光学工程的过渡较自然。",
       employment: "光学检测、成像、器件方向较有承接。",
+      sourceType: "official",
+      sourceUrl: "https://yjs.suda.edu.cn/54/32/c8386a676914/page.htm",
+      verifiedYear: 2026,
+      confidence: "high",
+      evidenceNote: "苏州大学 2026 硕士研究生招生专业目录已核验。",
     },
     {
       school: "中南大学",
@@ -617,6 +642,11 @@ function buildKnowledgeBase() {
       difficulty: 68,
       experience: "量子力学科目会拉开与工科常规光电项目的差异。",
       employment: "综合平台强，适合愿意去中部发展的学生。",
+      sourceType: "secondary",
+      sourceUrl: "https://m.koolearn.com/kaoyan/20251011/1883998.html",
+      verifiedYear: 2026,
+      confidence: "medium",
+      evidenceNote: "专业方向与考试科目来自公开整理页，学校官方简章页已核验存在但该方向细项建议复查学院目录。",
     },
     {
       school: "西南交通大学",
@@ -629,6 +659,11 @@ function buildKnowledgeBase() {
       difficulty: 70,
       experience: "物理本专业延续性强，招生规模相对友好。",
       employment: "适合继续科研或转向教师、研发类路径。",
+      sourceType: "official",
+      sourceUrl: "https://yz.swjtu.edu.cn/vatuu/PlanMasterMajorAction?setAction=intro&type=zszyml",
+      verifiedYear: 2026,
+      confidence: "medium",
+      evidenceNote: "西南交大 2026 硕士招生专业目录入口已核验，具体条目以目录检索结果为准。",
     },
     {
       school: "四川大学",
@@ -641,6 +676,11 @@ function buildKnowledgeBase() {
       difficulty: 85,
       experience: "平台强，但竞争和考试门槛更高。",
       employment: "平台、地域和品牌优势明显。",
+      sourceType: "official",
+      sourceUrl: "https://yz.scu.edu.cn/zsxx/Details/24514aab-5ae2-4ca9-b4b2-1bea9b38f77c",
+      verifiedYear: 2026,
+      confidence: "medium",
+      evidenceNote: "四川大学 2026 硕士招生章程已核验，具体学院专业字段应以专业目录为准。",
     },
     {
       school: "电子科技大学",
@@ -653,6 +693,11 @@ function buildKnowledgeBase() {
       difficulty: 84,
       experience: "偏产业和平台资源，适合就业导向明确的学生。",
       employment: "电子与光电行业出口强。",
+      sourceType: "secondary",
+      sourceUrl: "https://kaoyan.xdf.cn/202511/14995680.html",
+      verifiedYear: 2026,
+      confidence: "medium",
+      evidenceNote: "电子科大光电科学与工程学院专业与拟招生人数来自公开整理页，正式报考前应复核官方目录。",
     },
     {
       school: "中国计量大学",
@@ -665,6 +710,11 @@ function buildKnowledgeBase() {
       difficulty: 64,
       experience: "更偏稳妥和应用，适合求稳并看重城市的学生。",
       employment: "检测、测量、仪器、制造业质量岗位较匹配。",
+      sourceType: "secondary",
+      sourceUrl: "https://yzb.cjlu.edu.cn/",
+      verifiedYear: 2026,
+      confidence: "low",
+      evidenceNote: "需在正式报考前复核学校当年硕士专业目录；当前作为辅助备选信息保留。",
     },
     {
       school: "南京信息工程大学",
@@ -677,6 +727,28 @@ function buildKnowledgeBase() {
       difficulty: 60,
       experience: "作为江苏本地的保底梯队更有意义。",
       employment: "区域就业承接尚可，适合以留江苏为先的学生。",
+      sourceType: "official",
+      sourceUrl: "https://wdy.nuist.edu.cn/6798/listm.htm",
+      verifiedYear: 2026,
+      confidence: "high",
+      evidenceNote: "南京信息工程大学物理与光电工程学院 2026 招生目录已逐条核验。",
+    },
+    {
+      school: "南京信息工程大学",
+      city: "南京",
+      program: "080300 光学工程",
+      college: "物理与光电工程学院",
+      degreeType: "学硕",
+      exam: "英一 数一 820普通物理学（光学）",
+      tags: ["光学工程", "学硕", "江苏"],
+      difficulty: 66,
+      experience: "本校目录透明，考试科目明确，适合作为学硕保底或匹配下沿。",
+      employment: "可延伸到光电检测、传感、器件与继续深造。",
+      sourceType: "official",
+      sourceUrl: "https://wdy.nuist.edu.cn/6798/listm.htm",
+      verifiedYear: 2026,
+      confidence: "high",
+      evidenceNote: "南京信息工程大学物理与光电工程学院 2026 招生目录已逐条核验。",
     },
   ];
 }
@@ -720,6 +792,8 @@ function scoreCandidates(profile, programs) {
       }
       if (profile.mathLevel.includes("数学偏弱") && theoryHeavyExam) score -= 6;
       if (profile.mathLevel.includes("对数一有顾虑") && item.exam.includes("数一")) score -= 6;
+      if (item.confidence === "high") score += 3;
+      if (item.confidence === "low") score -= 6;
 
       return {
         ...item,

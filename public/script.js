@@ -172,11 +172,19 @@ function renderCandidates(candidates) {
   candidates.forEach((candidate) => {
     const card = document.createElement("article");
     card.className = "candidate-card";
+    const sourceLabel = candidate.sourceType === "official" ? "官方来源" : candidate.sourceType === "secondary" ? "公开整理" : "来源待补";
     card.innerHTML = `
       <h3>${escapeHtml(candidate.school)} · ${escapeHtml(candidate.program)}</h3>
       <div class="candidate-meta">${escapeHtml(candidate.college)} · ${escapeHtml(candidate.degreeType)} · ${escapeHtml(candidate.city)}</div>
       <div class="candidate-meta">考试科目：${escapeHtml(candidate.exam)}</div>
       <div class="candidate-meta">${escapeHtml(candidate.experience)}</div>
+      <div class="candidate-meta">核验：${escapeHtml(String(candidate.verifiedYear || "待补"))} · ${escapeHtml(sourceLabel)} · 可信度 ${escapeHtml(candidate.confidence || "unknown")}</div>
+      ${
+        candidate.sourceUrl
+          ? `<div class="candidate-meta"><a class="source-link" href="${escapeHtml(candidate.sourceUrl)}" target="_blank" rel="noreferrer">查看来源</a></div>`
+          : ""
+      }
+      ${candidate.evidenceNote ? `<div class="candidate-meta">${escapeHtml(candidate.evidenceNote)}</div>` : ""}
       <span class="score-pill">匹配分 ${candidate.score} / 难度 ${escapeHtml(candidate.difficultyTag)}</span>
     `;
     elements.candidateList.appendChild(card);
@@ -201,11 +209,18 @@ function renderRecommendations(recommendations) {
     list.forEach((program) => {
       const item = document.createElement("div");
       item.className = "program-card";
+      const sourceLabel = program.sourceType === "official" ? "官方来源" : program.sourceType === "secondary" ? "公开整理" : "来源待补";
       item.innerHTML = `
         <strong>${escapeHtml(program.school)} · ${escapeHtml(program.program)}</strong>
         <div class="program-meta">${escapeHtml(program.college)} · ${escapeHtml(program.degreeType)} · ${escapeHtml(program.exam)}</div>
         <div class="program-meta">读研体验：${escapeHtml(program.experience)}</div>
         <div class="program-meta">就业导向：${escapeHtml(program.employment)}</div>
+        <div class="program-meta">核验：${escapeHtml(String(program.verifiedYear || "待补"))} · ${escapeHtml(sourceLabel)} · 可信度 ${escapeHtml(program.confidence || "unknown")}</div>
+        ${
+          program.sourceUrl
+            ? `<div class="program-meta"><a class="source-link" href="${escapeHtml(program.sourceUrl)}" target="_blank" rel="noreferrer">查看来源</a></div>`
+            : ""
+        }
       `;
       card.appendChild(item);
     });

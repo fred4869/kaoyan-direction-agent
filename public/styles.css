@@ -294,6 +294,12 @@ textarea {
   line-height: 1.5;
 }
 
+.source-link {
+  color: var(--accent-strong);
+  text-decoration: none;
+  border-bottom: 1px solid rgba(164, 75, 36, 0.25);
+}
+
 .score-pill {
   display: inline-flex;
   margin-top: 10px;
