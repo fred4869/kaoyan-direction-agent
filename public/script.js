@@ -17,7 +17,7 @@ const elements = {
 };
 
 const state = {
-  sessionId: localStorage.getItem("kaoyan-agent-session") || "",
+  sessionId: localStorage.getItem("kaoyan-agent-session") || "primary",
   messages: [],
   stage: "初始建档",
   flags: {
@@ -32,14 +32,12 @@ init();
 async function init() {
   bindEvents();
 
-  if (state.sessionId) {
-    try {
-      const session = await fetchJson(`/api/session/${state.sessionId}`);
-      applySession(session);
-      return;
-    } catch {
-      localStorage.removeItem("kaoyan-agent-session");
-    }
+  try {
+    const session = await fetchJson(`/api/session/${state.sessionId}`);
+    applySession(session);
+    return;
+  } catch {
+    localStorage.removeItem("kaoyan-agent-session");
   }
 
   renderMessages([

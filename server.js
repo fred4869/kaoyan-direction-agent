@@ -1,5 +1,6 @@
 import "dotenv/config";
 import express from "express";
+import fs from "fs";
 import path from "path";
 import { fileURLToPath } from "url";
 
@@ -11,8 +12,13 @@ const port = Number(process.env.PORT || 3030);
 const dashscopeApiKey = process.env.DASHSCOPE_API_KEY || "";
 const dashscopeBaseUrl = (process.env.DASHSCOPE_BASE_URL || "https://dashscope.aliyuncs.com/compatible-mode/v1").replace(/\/+$/, "");
 const dashscopeModel = process.env.DASHSCOPE_MODEL || "qwen-max-latest";
+const defaultSessionId = process.env.DEFAULT_SESSION_ID || "primary";
+const dataDir = path.join(__dirname, "data");
+const sessionFilePath = path.join(dataDir, `${defaultSessionId}-session.json`);
+const maxWindowMessages = 10;
+const retainWindowMessages = 6;
 
-const sessions = new Map();
+const primarySession = loadSession();
 const knowledgeBase = buildKnowledgeBase();
 
 app.use(express.json({ limit: "1mb" }));
@@ -34,7 +40,7 @@ app.get("/api/session/:sessionId", (req, res) => {
 
 app.post("/api/chat", async (req, res) => {
   try {
-    const sessionId = String(req.body.sessionId || createSessionId());
+    const sessionId = String(req.body.sessionId || defaultSessionId);
     const userMessage = String(req.body.message || "").trim();
 
     if (!userMessage) {
@@ -42,17 +48,21 @@ app.post("/api/chat", async (req, res) => {
     }
 
     const session = getOrCreateSession(sessionId);
-    session.messages.push({ role: "user", content: userMessage, timestamp: Date.now() });
+    session.conversationWindow.push({ role: "user", content: userMessage, timestamp: Date.now() });
 
     updateSessionFromMessage(session, userMessage);
     maybeUnlockCandidates(session);
     maybeUnlockRecommendations(session);
+    refreshWorkingMemory(session);
 
     const assistantMessage = dashscopeApiKey
       ? await generateDashScopeReply(session, userMessage)
-      : generateLocalReply(session, userMessage);
+      : generateLocalReply(session);
 
-    session.messages.push({ role: "assistant", content: assistantMessage, timestamp: Date.now() });
+    session.conversationWindow.push({ role: "assistant", content: assistantMessage, timestamp: Date.now() });
+    compressConversation(session);
+    refreshWorkingMemory(session);
+    persistSession(session);
 
     res.json({
       sessionId,
@@ -70,11 +80,14 @@ app.listen(port, () => {
   console.log(`Kaoyan agent running at http://localhost:${port}`);
 });
 
-function createSessionId() {
-  return `session_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
-}
-
 function createSession() {
+  const initialMessage = {
+    role: "assistant",
+    content:
+      "我们先把你的情况摸清楚。我会像考研规划师一样，先判断你的基础、偏好和约束，再逐步缩小到适合的学校和专业方向。你可以先告诉我：现在大几、绩点或排名、数学和英语基础、更想留江苏还是可以去外地。",
+    timestamp: Date.now(),
+  };
+
   return {
     stage: "初始建档",
     flags: {
@@ -83,14 +96,16 @@ function createSession() {
       recommendation_ready: false,
     },
     panels_available: [],
-    messages: [
-      {
-        role: "assistant",
-        content:
-          "我们先把你的情况摸清楚。我会像考研规划师一样，先判断你的基础、偏好和约束，再逐步缩小到适合的学校和专业方向。你可以先告诉我：现在大几、绩点或排名、数学和英语基础、更想留江苏还是可以去外地。",
-        timestamp: Date.now(),
-      },
-    ],
+    conversationWindow: [initialMessage],
+    conversationArchive: [],
+    workingMemory: {
+      currentFocus: "先收集基础画像，确认学业水平、考试基础、地域偏好和就业/学术倾向。",
+      confirmedFacts: ["本科背景：河海大学 物理专业"],
+      openQuestions: ["现在大几", "绩点或排名大概如何", "数学和英语基础怎么样", "更倾向留江苏还是可接受外地"],
+      latestSummary: "会话刚开始，尚未形成稳定画像。",
+      compressedTurns: 0,
+      archiveCount: 0,
+    },
     profile: {
       major: "物理专业",
       school: "河海大学",
@@ -109,15 +124,65 @@ function createSession() {
     },
     candidatePrograms: [],
     recommendations: null,
+    updatedAt: new Date().toISOString(),
   };
 }
 
 function getOrCreateSession(sessionId) {
-  if (!sessions.has(sessionId)) {
-    sessions.set(sessionId, createSession());
+  return sessionId === defaultSessionId ? primarySession : primarySession;
+}
+
+function loadSession() {
+  ensureDataDir();
+
+  if (!fs.existsSync(sessionFilePath)) {
+    const seed = createSession();
+    writeSession(seed);
+    return seed;
   }
 
-  return sessions.get(sessionId);
+  try {
+    const raw = fs.readFileSync(sessionFilePath, "utf8");
+    return normalizeSession(JSON.parse(raw));
+  } catch {
+    const seed = createSession();
+    writeSession(seed);
+    return seed;
+  }
+}
+
+function persistSession(session) {
+  writeSession(normalizeSession(session));
+}
+
+function writeSession(session) {
+  ensureDataDir();
+  session.updatedAt = new Date().toISOString();
+  fs.writeFileSync(sessionFilePath, JSON.stringify(session, null, 2), "utf8");
+}
+
+function ensureDataDir() {
+  fs.mkdirSync(dataDir, { recursive: true });
+}
+
+function normalizeSession(session) {
+  if (!session || typeof session !== "object") {
+    return createSession();
+  }
+
+  const normalized = createSession();
+  normalized.stage = session.stage || normalized.stage;
+  normalized.flags = session.flags || normalized.flags;
+  normalized.panels_available = session.panels_available || normalized.panels_available;
+  normalized.profile = { ...normalized.profile, ...(session.profile || {}) };
+  normalized.candidatePrograms = session.candidatePrograms || normalized.candidatePrograms;
+  normalized.recommendations = session.recommendations || normalized.recommendations;
+  normalized.updatedAt = session.updatedAt || normalized.updatedAt;
+  normalized.conversationWindow = session.conversationWindow || session.messages || normalized.conversationWindow;
+  normalized.conversationArchive = session.conversationArchive || normalized.conversationArchive;
+  normalized.workingMemory = session.workingMemory || normalized.workingMemory;
+  refreshWorkingMemory(normalized);
+  return normalized;
 }
 
 function buildSessionPayload(session) {
@@ -131,7 +196,15 @@ function buildSessionPayload(session) {
     panels_available: session.panels_available,
     candidatePrograms: session.candidatePrograms.slice(0, 8),
     recommendations: session.recommendations,
-    messages: session.messages,
+    messages: session.conversationWindow,
+    memory: {
+      currentFocus: session.workingMemory.currentFocus,
+      confirmedFacts: session.workingMemory.confirmedFacts,
+      openQuestions: session.workingMemory.openQuestions,
+      latestSummary: session.workingMemory.latestSummary,
+      archiveCount: session.workingMemory.archiveCount,
+      compressedTurns: session.workingMemory.compressedTurns,
+    },
   };
 }
 
@@ -154,8 +227,8 @@ function updateSessionFromMessage(session, message) {
   const text = message.toLowerCase();
   const profile = session.profile;
 
-  if (/大一|大二|大三|大四|研一|毕业/.test(message)) {
-    profile.year = (message.match(/大一|大二|大三|大四|研一|毕业/) || [""])[0];
+  if (/大一|大二|大三|大四|研一/.test(message)) {
+    profile.year = (message.match(/大一|大二|大三|大四|研一/) || [""])[0];
   }
   if (/绩点|gpa/.test(text)) {
     profile.gpa = extractNumberChunk(message, /(绩点|gpa)[^\d]*(\d(?:\.\d+)?)/i) || profile.gpa;
@@ -213,13 +286,12 @@ function updateSessionFromMessage(session, message) {
 function maybeUnlockCandidates(session) {
   if (!session.flags.profile_ready) return;
 
-  if (!session.flags.candidates_ready) {
-    session.candidatePrograms = scoreCandidates(session.profile, knowledgeBase).slice(0, 8);
-    session.flags.candidates_ready = session.candidatePrograms.length > 0;
-    if (session.flags.candidates_ready) {
-      session.stage = "候选扩展";
-      ensurePanel(session, "candidates");
-    }
+  session.candidatePrograms = scoreCandidates(session.profile, knowledgeBase).slice(0, 8);
+  session.flags.candidates_ready = session.candidatePrograms.length > 0;
+
+  if (session.flags.candidates_ready) {
+    session.stage = "候选扩展";
+    ensurePanel(session, "candidates");
   }
 }
 
@@ -233,18 +305,116 @@ function maybeUnlockRecommendations(session) {
 
   if (readySignals < 3) return;
 
-  if (!session.flags.recommendation_ready) {
-    session.recommendations = buildRecommendations(session.candidatePrograms);
-    session.flags.recommendation_ready = true;
-    session.stage = "结论生成";
-    ensurePanel(session, "recommendations");
-  }
+  session.recommendations = buildRecommendations(session.candidatePrograms);
+  session.flags.recommendation_ready = true;
+  session.stage = "结论生成";
+  ensurePanel(session, "recommendations");
 }
 
 function ensurePanel(session, panel) {
   if (!session.panels_available.includes(panel)) {
     session.panels_available.push(panel);
   }
+}
+
+function refreshWorkingMemory(session) {
+  const confirmedFacts = buildProfileSummary(session.profile);
+
+  if (session.candidatePrograms.length) {
+    confirmedFacts.push(
+      "当前优先候选：" +
+        session.candidatePrograms
+          .slice(0, 3)
+          .map((item) => `${item.school}${item.program}`)
+          .join("、"),
+    );
+  }
+
+  const latestMessages = session.conversationWindow
+    .slice(-4)
+    .map((item) => `${item.role === "user" ? "她" : "顾问"}：${item.content}`)
+    .join(" ");
+
+  session.workingMemory = {
+    currentFocus: inferCurrentFocus(session),
+    confirmedFacts,
+    openQuestions: inferOpenQuestions(session.profile, session.flags),
+    latestSummary: buildWorkingSummary(session, latestMessages),
+    compressedTurns: session.conversationArchive.reduce((sum, item) => sum + item.messageCount, 0),
+    archiveCount: session.conversationArchive.length,
+  };
+}
+
+function inferOpenQuestions(profile, flags) {
+  const open = [];
+  if (!profile.year) open.push("当前年级");
+  if (!profile.gpa && !profile.ranking) open.push("绩点或排名");
+  if (!profile.mathLevel) open.push("数学基础");
+  if (!profile.englishLevel) open.push("英语基础");
+  if (!profile.locations.length) open.push("地域偏好");
+  if (!profile.degreePreference) open.push("学硕/专硕接受度");
+  if (!profile.careerPreference) open.push("更偏就业还是科研");
+  if (flags.candidates_ready && !profile.interest.length) open.push("更偏物理、光电、电子信息还是仪器");
+  return open;
+}
+
+function inferCurrentFocus(session) {
+  if (!session.flags.profile_ready) return "补齐基础画像，避免过早给学校名单。";
+  if (!session.flags.candidates_ready) return "根据画像把方向收敛到更合适的专业赛道。";
+  if (!session.flags.recommendation_ready) return "对候选项目做难度、体验和就业的排序。";
+  return "在已有分层推荐上继续解释原因，并根据新偏好微调排序。";
+}
+
+function buildWorkingSummary(session, latestMessages) {
+  const topCandidates = session.candidatePrograms
+    .slice(0, 2)
+    .map((item) => `${item.school}${item.program}`)
+    .join("、");
+
+  return [
+    `当前阶段为${session.stage}。`,
+    session.flags.profile_ready ? "学生画像已形成初步判断。" : "学生画像仍不完整。",
+    topCandidates ? `当前排序靠前的是${topCandidates}。` : "暂未形成稳定候选。",
+    latestMessages ? `最近对话集中在：${latestMessages}` : "",
+  ]
+    .filter(Boolean)
+    .join("");
+}
+
+function compressConversation(session) {
+  if (session.conversationWindow.length <= maxWindowMessages) return;
+
+  const compressCount = session.conversationWindow.length - retainWindowMessages;
+  const toCompress = session.conversationWindow.splice(0, compressCount);
+
+  session.conversationArchive.push({
+    createdAt: new Date().toISOString(),
+    messageCount: toCompress.length,
+    summary: summarizeMessages(toCompress),
+  });
+}
+
+function summarizeMessages(messages) {
+  const userPoints = [];
+  const assistantPoints = [];
+
+  for (const message of messages) {
+    const trimmed = message.content.replace(/\s+/g, " ").trim();
+    if (!trimmed) continue;
+
+    if (message.role === "user") {
+      userPoints.push(trimmed);
+    } else {
+      assistantPoints.push(trimmed);
+    }
+  }
+
+  return [
+    userPoints.length ? `学生补充了：${truncate(userPoints.slice(-3).join("；"), 180)}` : "",
+    assistantPoints.length ? `顾问回应了：${truncate(assistantPoints.slice(-2).join("；"), 180)}` : "",
+  ]
+    .filter(Boolean)
+    .join(" ");
 }
 
 async function generateDashScopeReply(session, userMessage) {
@@ -258,18 +428,12 @@ async function generateDashScopeReply(session, userMessage) {
       model: dashscopeModel,
       temperature: 0.4,
       messages: [
-        {
-          role: "system",
-          content: buildSystemPrompt(session),
-        },
-        ...session.messages.slice(-8).map((item) => ({
+        { role: "system", content: buildSystemPrompt(session) },
+        ...session.conversationWindow.slice(-8).map((item) => ({
           role: item.role,
           content: item.content,
         })),
-        {
-          role: "user",
-          content: userMessage,
-        },
+        { role: "user", content: userMessage },
       ],
     }),
   });
@@ -280,10 +444,15 @@ async function generateDashScopeReply(session, userMessage) {
   }
 
   const data = await response.json();
-  return data.choices?.[0]?.message?.content?.trim() || generateLocalReply(session, userMessage);
+  return data.choices?.[0]?.message?.content?.trim() || generateLocalReply(session);
 }
 
 function buildSystemPrompt(session) {
+  const archiveSummary = session.conversationArchive
+    .slice(-3)
+    .map((item, index) => `摘要${index + 1}：${item.summary}`)
+    .join("\n");
+
   return [
     "你是一名专业、严谨、克制的中国考研规划师。",
     "你的任务是帮助一名河海大学物理专业学生，通过自然语言对话逐步确定考研方向。",
@@ -292,6 +461,14 @@ function buildSystemPrompt(session) {
     "你要综合考虑：考试难度、科目匹配、学校层次、城市、读研体验、就业出口、学硕专硕差异。",
     "当前阶段：" + session.stage,
     "当前画像摘要：\n" + buildProfileSummary(session.profile).join("\n"),
+    "当前工作记忆：\n" +
+      [
+        `当前焦点：${session.workingMemory.currentFocus}`,
+        `已确认：${session.workingMemory.confirmedFacts.join("；") || "暂无"}`,
+        `待确认：${session.workingMemory.openQuestions.join("；") || "暂无"}`,
+        `阶段摘要：${session.workingMemory.latestSummary}`,
+      ].join("\n"),
+    "历史压缩摘要：\n" + (archiveSummary || "暂无"),
     "候选项目（如果已有）：\n" +
       (session.candidatePrograms.length
         ? session.candidatePrograms
@@ -307,9 +484,9 @@ function buildSystemPrompt(session) {
   ].join("\n");
 }
 
-function generateLocalReply(session, userMessage) {
+function generateLocalReply(session) {
   if (!session.flags.profile_ready) {
-    return "我先不急着给学校。就你刚才这段信息，我还缺几项会显著影响判断的内容：一是你现在在年级和排名大概处于什么位置；二是数学和英语分别到什么水平；三是你更倾向留江苏还是能接受外地。把这三项补齐后，我就能开始收缩方向。";
+    return "我先不急着给学校。就目前信息，我还缺几项会显著影响判断的内容：一是你现在在年级和排名大概处于什么位置；二是数学和英语分别到什么水平；三是你更倾向留江苏还是能接受外地。把这三项补齐后，我就能开始收缩方向。";
   }
 
   if (session.flags.profile_ready && !session.flags.candidates_ready) {
@@ -321,8 +498,13 @@ function generateLocalReply(session, userMessage) {
     return `我已经能给出第一批候选了，当前比较贴近你的有 ${top}。但我还不想过早定结论，因为学硕/专硕接受度、数学承受力和就业取向会继续改变排序。你接下来可以直接告诉我：你能不能接受数一，和你是否排斥专硕。`;
   }
 
-  const rec = session.recommendations;
-  const topMatch = rec?.match?.[0];
+  const topMatch = session.recommendations?.match?.[0];
+  const openQuestions = session.workingMemory.openQuestions;
+
+  if (openQuestions.length) {
+    return `我已经形成初步分层建议，当前最值得优先深挖的是 ${topMatch ? `${topMatch.school}${topMatch.program}` : "匹配档项目"}。不过还有 ${openQuestions.join("、")} 这些点没完全确认，它们会继续影响排序。你可以任选一个先补充，我再把建议收紧。`;
+  }
+
   return `基于目前信息，我已经形成分层建议。你现在最值得优先深挖的是 ${topMatch ? `${topMatch.school}${topMatch.program}` : "匹配档项目"}。如果你愿意，我下一轮可以继续把每个候选拆开讲清楚：考试科目难点、读研体验、就业出口、以及为什么它比另外几个更适合你。`;
 }
 
@@ -524,7 +706,8 @@ function summarizeEnglish(text) {
 }
 
 function summarizeMath(text) {
-  if (/数一|高数不错|数学强|数学还可以/.test(text)) return "可承受数一/数学较强";
+  if (/数一.*犹豫|犹豫.*数一|不想考数一|怕数一|数一压力大/.test(text)) return "更适合数二/对数一有顾虑";
+  if (/高数不错|数学强|数学还可以/.test(text)) return "可承受数一/数学较强";
   if (/数二|数学一般/.test(text)) return "更适合数二/数学一般";
   if (/数学弱|高数差/.test(text)) return "数学偏弱";
   return "数学待细化";
@@ -532,7 +715,9 @@ function summarizeMath(text) {
 
 function extractLocations(text) {
   const mapping = ["江苏", "南京", "苏州", "上海", "杭州", "成都", "四川", "湖南", "长沙", "外地"];
-  return mapping.filter((item) => text.includes(item)).map((item) => (item === "南京" || item === "苏州" ? "江苏" : item === "四川" ? "成都" : item));
+  return mapping
+    .filter((item) => text.includes(item))
+    .map((item) => (item === "南京" || item === "苏州" ? "江苏" : item === "四川" ? "成都" : item));
 }
 
 function extractInterests(text) {
@@ -542,6 +727,8 @@ function extractInterests(text) {
 
 function extractDegreePreference(text) {
   if (text.includes("都可以")) return "都可以";
+  if (/不排斥专硕|能接受专硕|专硕也可以/.test(text)) return "都可以";
+  if (/不排斥学硕|学硕也可以/.test(text)) return "都可以";
   if (text.includes("学硕")) return "学硕优先";
   if (text.includes("专硕")) return "专硕优先";
   return "";
@@ -558,6 +745,10 @@ function extractRiskTolerance(text) {
   if (/稳|保守|不想太难|求稳/.test(text)) return "求稳";
   if (/冲|想拼|可以难一点/.test(text)) return "愿意冲";
   return "";
+}
+
+function truncate(text, maxLength) {
+  return text.length > maxLength ? `${text.slice(0, maxLength - 1)}…` : text;
 }
 
 function dedupe(values) {
