@@ -64,6 +64,12 @@ textarea {
   backdrop-filter: blur(10px);
 }
 
+.topbar-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
 .eyebrow {
   margin: 0 0 6px;
   color: var(--muted);
@@ -85,6 +91,15 @@ textarea {
   padding: 10px 14px;
   border-radius: 999px;
   box-shadow: var(--shadow);
+  white-space: nowrap;
+}
+
+.ghost-button {
+  border: 1px solid var(--line);
+  background: rgba(255, 252, 247, 0.82);
+  color: var(--muted);
+  padding: 10px 14px;
+  border-radius: 999px;
   white-space: nowrap;
 }
 
@@ -354,5 +369,22 @@ textarea {
     right: auto;
     width: min(720px, 100vw);
     transform: translateX(-50%);
+  }
+}
+
+@media (max-width: 520px) {
+  .topbar {
+    align-items: flex-start;
+  }
+
+  .topbar-actions {
+    flex-direction: column-reverse;
+    align-items: flex-end;
+  }
+
+  .ghost-button,
+  .stage-badge {
+    padding: 9px 12px;
+    font-size: 13px;
   }
 }

@@ -1,6 +1,9 @@
+const sessionStorageKey = "kaoyan-agent-session";
+
 const elements = {
   messages: document.querySelector("#messages"),
   stageBadge: document.querySelector("#stageBadge"),
+  resetConversation: document.querySelector("#resetConversation"),
   chatForm: document.querySelector("#chatForm"),
   messageInput: document.querySelector("#messageInput"),
   sendButton: document.querySelector("#sendButton"),
@@ -17,7 +20,7 @@ const elements = {
 };
 
 const state = {
-  sessionId: localStorage.getItem("kaoyan-agent-session") || "primary",
+  sessionId: resolveSessionId(),
   messages: [],
   stage: "初始建档",
   flags: {
@@ -38,7 +41,9 @@ async function init() {
     applySession(session);
     return;
   } catch {
-    localStorage.removeItem("kaoyan-agent-session");
+    localStorage.removeItem(sessionStorageKey);
+    state.sessionId = createSessionId();
+    localStorage.setItem(sessionStorageKey, state.sessionId);
   }
 
   renderMessages([
@@ -53,6 +58,7 @@ async function init() {
 function bindEvents() {
   elements.chatForm.addEventListener("submit", onSubmit);
   elements.messageInput.addEventListener("input", autoResize);
+  elements.resetConversation.addEventListener("click", resetConversation);
   document.querySelectorAll(".chip").forEach((chip) => {
     chip.addEventListener("click", () => {
       elements.messageInput.value = chip.dataset.prompt || "";
@@ -94,18 +100,15 @@ async function onSubmit(event) {
       }),
     });
 
-    if (!state.sessionId && data.sessionId) {
-      state.sessionId = data.sessionId;
-      localStorage.setItem("kaoyan-agent-session", data.sessionId);
-    }
-
     applySession(data);
     if (Array.isArray(data.researchUpdates) && data.researchUpdates.length) {
       const note = data.researchUpdates
         .map((item) =>
           item.status === "updated"
             ? `已联网补录：${item.record.school} ${item.record.program}`
-            : `检索未完成：${item.school} ${item.program} (${item.message})`,
+            : item.status === "queued"
+              ? `已启动后台核验：${item.school} ${item.program}`
+              : `检索未完成：${item.school} ${item.program} (${item.message})`,
         )
         .join("\n");
       pushMessage({ role: "assistant", content: note });
@@ -257,7 +260,52 @@ function autoResize() {
 
 function setSubmitting(isSubmitting) {
   elements.sendButton.disabled = isSubmitting;
+  elements.resetConversation.disabled = isSubmitting;
   elements.sendButton.textContent = isSubmitting ? "发送中" : "发送";
+}
+
+async function resetConversation() {
+  closeSheet(elements.profileSheet);
+  closeSheet(elements.candidateSheet);
+  closeSheet(elements.recommendationSheet);
+  elements.messageInput.value = "";
+  autoResize();
+  setSubmitting(true);
+
+  try {
+    state.sessionId = createSessionId();
+    localStorage.setItem(sessionStorageKey, state.sessionId);
+    const session = await fetchJson(`/api/session/${state.sessionId}`);
+    applySession(session);
+  } catch (error) {
+    renderMessages([
+      {
+        role: "assistant",
+        content: `重新开始失败：${error.message || "请稍后重试"}`,
+      },
+    ]);
+  } finally {
+    setSubmitting(false);
+  }
+}
+
+function resolveSessionId() {
+  const stored = localStorage.getItem(sessionStorageKey);
+  if (stored && stored !== "primary") {
+    return stored;
+  }
+
+  const next = createSessionId();
+  localStorage.setItem(sessionStorageKey, next);
+  return next;
+}
+
+function createSessionId() {
+  if (globalThis.crypto?.randomUUID) {
+    return `session-${globalThis.crypto.randomUUID()}`;
+  }
+
+  return `session-${Date.now()}-${Math.random().toString(16).slice(2)}`;
 }
 
 async function fetchJson(url, options = {}) {
