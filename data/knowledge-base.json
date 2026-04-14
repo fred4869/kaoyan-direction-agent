@@ -191,27 +191,6 @@
     "evidenceNote": "电子科大光电科学与工程学院专业与拟招生人数来自公开整理页，正式报考前应复核官方目录。"
   },
   {
-    "school": "中国计量大学",
-    "city": "杭州",
-    "program": "085407 仪器仪表工程",
-    "college": "光学与电子科技学院",
-    "degreeType": "专硕",
-    "exam": "英二 数二",
-    "tags": [
-      "仪器",
-      "专硕",
-      "长三角"
-    ],
-    "difficulty": 64,
-    "experience": "更偏稳妥和应用，适合求稳并看重城市的学生。",
-    "employment": "检测、测量、仪器、制造业质量岗位较匹配。",
-    "sourceType": "secondary",
-    "sourceUrl": "https://yzb.cjlu.edu.cn/",
-    "verifiedYear": 2026,
-    "confidence": "low",
-    "evidenceNote": "需在正式报考前复核学校当年硕士专业目录；当前作为辅助备选信息保留。"
-  },
-  {
     "school": "南京信息工程大学",
     "city": "南京",
     "program": "085408 光电信息工程",
@@ -359,26 +338,6 @@
   {
     "school": "宁波大学",
     "city": "待补",
-    "program": "085400 电子信息",
-    "college": "待补",
-    "degreeType": "专硕",
-    "exam": "英一 英二 数二",
-    "tags": [
-      "电子信息",
-      "专硕"
-    ],
-    "difficulty": 70,
-    "experience": "该项目为最新联网检索补录，体验类结论需继续结合导师、复试细则和往届反馈完善。",
-    "employment": "就业导向需进一步结合学院平台和城市产业情况补充。",
-    "sourceType": "official",
-    "sourceUrl": "https://yjs.ndky.edu.cn/planning/13191.jhtml",
-    "verifiedYear": 2014,
-    "confidence": "medium",
-    "evidenceNote": "由系统根据检索结果自动补录，来源标题：招生计划 - 招生网 - 宁波大学科学技术学院"
-  },
-  {
-    "school": "宁波大学",
-    "city": "待补",
     "program": "光学工程",
     "college": "待补",
     "degreeType": "学硕",
@@ -395,5 +354,25 @@
     "verifiedYear": 2026,
     "confidence": "medium",
     "evidenceNote": "由系统根据检索结果自动补录，来源标题：宁波大学2026年硕士研究生招生简章-宁波大学研究生院/研究生工作部/学科建设处"
+  },
+  {
+    "school": "温州大学",
+    "city": "待补",
+    "program": "光学工程",
+    "college": "待补",
+    "degreeType": "学硕",
+    "exam": "待补",
+    "tags": [
+      "光学工程",
+      "学硕"
+    ],
+    "difficulty": 70,
+    "experience": "该项目为最新联网检索补录，体验类结论需继续结合导师、复试细则和往届反馈完善。",
+    "employment": "就业导向需进一步结合学院平台和城市产业情况补充。",
+    "sourceType": "official",
+    "sourceUrl": "https://yjsb.wzu.edu.cn/zsw/",
+    "verifiedYear": 2026,
+    "confidence": "high",
+    "evidenceNote": "由系统根据检索结果自动补录，来源标题：网站首页-温州大学研究生院（研究生工作部） - wzu"
   }
 ]

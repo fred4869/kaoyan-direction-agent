@@ -225,6 +225,7 @@ function sanitizeKnowledgeBase(items) {
   for (const item of items) {
     const cleanedSchool = cleanSchoolName(item.school || "");
     if (!isValidSchoolName(cleanedSchool)) continue;
+    if (!isKnowledgeRecordUsable({ ...item, school: cleanedSchool })) continue;
 
     const normalized = {
       ...item,
@@ -1033,6 +1034,14 @@ async function researchProgramAndUpdateKnowledgeBase({ school, program }) {
   const best = rankedResults[0];
   const page = await fetchPageSummary(best.url);
   const record = buildResearchedRecord({ school, program, best, page });
+  if (!isKnowledgeRecordUsable(record)) {
+    return {
+      school,
+      program,
+      status: "not_found",
+      message: "检索到的页面可信度不足，已跳过自动入库",
+    };
+  }
   const merged = mergeKnowledgeRecord(record);
 
   return {
@@ -1096,6 +1105,8 @@ function rankSearchResults(results, school, program) {
       if (/研究生|招生|专业目录|简章/.test(item.title + item.snippet)) score += 10;
       if (isOfficialDomain(item.url)) score += 25;
       if (/m\.koolearn|xdf|kaoyan/.test(item.url)) score -= 5;
+      if (isAffiliatedCollegeText(`${item.title} ${item.snippet}`)) score -= 35;
+      if (extractYear(`${item.title} ${item.snippet}`) && extractYear(`${item.title} ${item.snippet}`) < new Date().getFullYear() - 1) score -= 25;
 
       return { ...item, score };
     })
@@ -1137,6 +1148,7 @@ async function fetchPageSummary(url) {
 function buildResearchedRecord({ school, program, best, page }) {
   const nowYear = new Date().getFullYear();
   const titleText = `${best.title} ${page.title} ${best.snippet} ${page.excerpt}`;
+  const verifiedYear = extractYear(titleText) || nowYear;
   const detectedDegreeType = /专业学位|专硕|0854|085407|085408|085400/.test(titleText) ? "专硕" : "学硕";
   const detectedProgram = detectProgramName(program, titleText);
   const detectedCity = detectCity(titleText, school);
@@ -1156,8 +1168,8 @@ function buildResearchedRecord({ school, program, best, page }) {
     employment: "就业导向需进一步结合学院平台和城市产业情况补充。",
     sourceType: isOfficialDomain(best.url) ? "official" : "secondary",
     sourceUrl: best.url,
-    verifiedYear: extractYear(titleText) || nowYear,
-    confidence: isOfficialDomain(best.url) ? "medium" : "low",
+    verifiedYear,
+    confidence: inferResearchConfidence({ sourceUrl: best.url, titleText, verifiedYear, detectedProgram, requestedProgram: program }),
     evidenceNote: `由系统根据检索结果自动补录，来源标题：${best.title}`,
   };
 }
@@ -1316,6 +1328,36 @@ function truncate(text, maxLength) {
 
 function dedupe(values) {
   return [...new Set(values.filter(Boolean))];
+}
+
+function isKnowledgeRecordUsable(record) {
+  const nowYear = new Date().getFullYear();
+  const combined = `${record.school || ""} ${record.program || ""} ${record.college || ""} ${record.evidenceNote || ""} ${record.sourceUrl || ""}`;
+
+  if (!record.school || !record.program) return false;
+  if (isAffiliatedCollegeText(combined)) return false;
+  if ((record.verifiedYear || 0) < nowYear - 1 && record.sourceType !== "official") return false;
+  if ((record.verifiedYear || 0) < nowYear - 3) return false;
+  if (record.sourceType === "secondary" && record.confidence === "low") return false;
+
+  return true;
+}
+
+function isAffiliatedCollegeText(text) {
+  return /科学技术学院|独立学院|继续教育|成人教育|网络教育/.test(text);
+}
+
+function inferResearchConfidence({ sourceUrl, titleText, verifiedYear, detectedProgram, requestedProgram }) {
+  const nowYear = new Date().getFullYear();
+  let score = 0;
+  if (isOfficialDomain(sourceUrl)) score += 2;
+  if (verifiedYear >= nowYear - 1) score += 2;
+  if (titleText.includes(requestedProgram) || detectedProgram.includes(requestedProgram)) score += 1;
+  if (!isAffiliatedCollegeText(titleText)) score += 1;
+
+  if (score >= 5) return "high";
+  if (score >= 3) return "medium";
+  return "low";
 }
 
 async function fetchWithTimeout(url, timeoutMs, options = {}) {
