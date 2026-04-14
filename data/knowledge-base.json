@@ -335,5 +335,65 @@
     "verifiedYear": 2026,
     "confidence": "medium",
     "evidenceNote": "由系统根据检索结果自动补录，来源标题：上海大学2026年硕士研究生招生目录"
+  },
+  {
+    "school": "杭州电子科技大学",
+    "city": "杭州",
+    "program": "电子信息",
+    "college": "待补",
+    "degreeType": "专硕",
+    "exam": "待补",
+    "tags": [
+      "电子信息",
+      "专硕"
+    ],
+    "difficulty": 70,
+    "experience": "该项目为最新联网检索补录，体验类结论需继续结合导师、复试细则和往届反馈完善。",
+    "employment": "就业导向需进一步结合学院平台和城市产业情况补充。",
+    "sourceType": "official",
+    "sourceUrl": "http://grs.hdu.edu.cn/",
+    "verifiedYear": 2026,
+    "confidence": "medium",
+    "evidenceNote": "由系统根据检索结果自动补录，来源标题：杭州电子科技大学研究生院"
+  },
+  {
+    "school": "宁波大学",
+    "city": "待补",
+    "program": "085400 电子信息",
+    "college": "待补",
+    "degreeType": "专硕",
+    "exam": "英一 英二 数二",
+    "tags": [
+      "电子信息",
+      "专硕"
+    ],
+    "difficulty": 70,
+    "experience": "该项目为最新联网检索补录，体验类结论需继续结合导师、复试细则和往届反馈完善。",
+    "employment": "就业导向需进一步结合学院平台和城市产业情况补充。",
+    "sourceType": "official",
+    "sourceUrl": "https://yjs.ndky.edu.cn/planning/13191.jhtml",
+    "verifiedYear": 2014,
+    "confidence": "medium",
+    "evidenceNote": "由系统根据检索结果自动补录，来源标题：招生计划 - 招生网 - 宁波大学科学技术学院"
+  },
+  {
+    "school": "宁波大学",
+    "city": "待补",
+    "program": "光学工程",
+    "college": "待补",
+    "degreeType": "学硕",
+    "exam": "数二",
+    "tags": [
+      "光学工程",
+      "学硕"
+    ],
+    "difficulty": 70,
+    "experience": "该项目为最新联网检索补录，体验类结论需继续结合导师、复试细则和往届反馈完善。",
+    "employment": "就业导向需进一步结合学院平台和城市产业情况补充。",
+    "sourceType": "official",
+    "sourceUrl": "https://graduate.nbu.edu.cn/info/1073/25251.htm",
+    "verifiedYear": 2026,
+    "confidence": "medium",
+    "evidenceNote": "由系统根据检索结果自动补录，来源标题：宁波大学2026年硕士研究生招生简章-宁波大学研究生院/研究生工作部/学科建设处"
   }
 ]

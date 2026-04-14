@@ -19,10 +19,13 @@ const sessionFilePath = path.join(dataDir, `${defaultSessionId}-session.json`);
 const knowledgeBaseFilePath = path.join(dataDir, "knowledge-base.json");
 const maxWindowMessages = 10;
 const retainWindowMessages = 6;
+const webSearchTimeoutMs = Number(process.env.WEB_SEARCH_TIMEOUT_MS || 3500);
+const webFetchTimeoutMs = Number(process.env.WEB_FETCH_TIMEOUT_MS || 3500);
 
 const primarySession = loadSession();
 const sessionCache = new Map([[defaultSessionId, primarySession]]);
 let knowledgeBase = loadKnowledgeBase();
+const researchInFlight = new Set();
 
 app.use(express.json({ limit: "1mb" }));
 app.use(express.static(path.join(__dirname, "public")));
@@ -74,7 +77,7 @@ app.post("/api/chat", async (req, res) => {
     }
 
     const session = getOrCreateSession(sessionId);
-    const researchUpdates = await maybeResearchFromMessage(userMessage);
+    const researchUpdates = queueResearchFromMessage(userMessage);
     const userEntry = { role: "user", content: userMessage, timestamp: Date.now() };
     session.conversationLog.push(userEntry);
     session.conversationWindow.push(userEntry);
@@ -370,13 +373,17 @@ function updateSessionFromMessage(session, message) {
     ensurePanel(session, "profile");
   }
 
-  if (profileDataPoints >= 6) {
+  if (isCandidateExplorationReady(profile)) {
     session.stage = "候选扩展";
   }
 }
 
 function maybeUnlockCandidates(session) {
-  if (!session.flags.profile_ready) return;
+  if (!session.flags.profile_ready || !isCandidateExplorationReady(session.profile)) {
+    session.flags.candidates_ready = false;
+    session.candidatePrograms = [];
+    return;
+  }
 
   session.candidatePrograms = scoreCandidates(session.profile, knowledgeBase).slice(0, 8);
   session.flags.candidates_ready = session.candidatePrograms.length > 0;
@@ -442,6 +449,7 @@ function inferOpenQuestions(profile, flags) {
   if (!profile.locations.length) open.push("地域偏好");
   if (!profile.degreePreference) open.push("学硕/专硕接受度");
   if (!profile.careerPreference) open.push("更偏就业还是科研");
+  if (!profile.riskTolerance) open.push("风险偏好（求稳还是愿意冲）");
   if (flags.candidates_ready && !profile.interest.length) open.push("更偏物理、光电、电子信息还是仪器");
   return open;
 }
@@ -577,7 +585,8 @@ function generateLocalReply(session) {
   }
 
   if (session.flags.profile_ready && !session.flags.candidates_ready) {
-    return "你的基础画像已经有雏形了。我下一步会把方向缩到物理学、光学工程、光电信息、电子信息这几个相邻赛道里，但在此之前我还想确认一件事：你更看重上岸稳妥，还是更看重毕业后的就业出口？这个选择会直接改变学校梯队。";
+    const missing = session.workingMemory.openQuestions.slice(0, 3).join("、");
+    return `你的基础画像已经有雏形了，但我还不应该太快给学校名单。当前还缺 ${missing || "几项关键信息"}，尤其是会直接影响难度判断和学硕/专硕分流的部分。你先把这些补上，我再进入候选扩展。`;
   }
 
   if (session.flags.candidates_ready && !session.flags.recommendation_ready) {
@@ -603,8 +612,20 @@ function isRecommendationReady(profile) {
       profile.mathLevel &&
       profile.englishLevel &&
       profile.locations.length &&
+      profile.interest.length &&
       profile.degreePreference &&
-      profile.careerPreference,
+      profile.careerPreference &&
+      (profile.riskTolerance || profile.constraints.length),
+  );
+}
+
+function isCandidateExplorationReady(profile) {
+  return Boolean(
+    profile.year &&
+      profile.locations.length &&
+      (profile.interest.length || profile.careerPreference) &&
+      (profile.mathLevel || profile.englishLevel) &&
+      (profile.gpa || profile.ranking || profile.degreePreference || profile.riskTolerance || profile.constraints.length),
   );
 }
 
@@ -898,36 +919,44 @@ function buildRecommendations(candidates) {
   };
 }
 
-async function maybeResearchFromMessage(message) {
+function queueResearchFromMessage(message) {
+  if (!hasResearchIntent(message)) return [];
+
   const requests = extractResearchRequests(message);
   if (!requests.length) return [];
 
-  const updates = [];
+  const queued = [];
 
   for (const request of requests.slice(0, 2)) {
-    const exists = knowledgeBase.some(
-      (item) => item.school === request.school && item.program.includes(request.programKeyword),
-    );
+    const key = `${request.school}__${request.programKeyword}`;
+    const exists = knowledgeBase.some((item) => item.school === request.school && item.program.includes(request.programKeyword));
 
-    if (exists) continue;
+    if (exists || researchInFlight.has(key)) continue;
 
-    try {
-      const result = await researchProgramAndUpdateKnowledgeBase({
-        school: request.school,
-        program: request.programKeyword,
+    researchInFlight.add(key);
+    queued.push({
+      school: request.school,
+      program: request.programKeyword,
+      status: "queued",
+      message: "已启动后台联网核验，当前回复不会等待检索完成。",
+    });
+    void researchProgramAndUpdateKnowledgeBase({
+      school: request.school,
+      program: request.programKeyword,
+    })
+      .catch((error) => {
+        console.error("Background research failed:", request.school, request.programKeyword, error);
+      })
+      .finally(() => {
+        researchInFlight.delete(key);
       });
-      updates.push(result);
-    } catch (error) {
-      updates.push({
-        school: request.school,
-        program: request.programKeyword,
-        status: "error",
-        message: error.message || "Research failed",
-      });
-    }
   }
 
-  return updates;
+  return queued;
+}
+
+function hasResearchIntent(message) {
+  return /查|查询|检索|搜一下|了解一下|看看|纳入考虑|加入考虑|放进考虑|补录|更新知识库|加进来|也考虑/.test(message);
 }
 
 function extractResearchRequests(message) {
@@ -1016,7 +1045,7 @@ async function researchProgramAndUpdateKnowledgeBase({ school, program }) {
 
 async function searchWeb(query) {
   const url = `https://html.duckduckgo.com/html/?q=${encodeURIComponent(query)}`;
-  const response = await fetch(url, {
+  const response = await fetchWithTimeout(url, webSearchTimeoutMs, {
     headers: {
       "User-Agent": "Mozilla/5.0",
     },
@@ -1085,7 +1114,7 @@ function isOfficialDomain(url) {
 }
 
 async function fetchPageSummary(url) {
-  const response = await fetch(url, {
+  const response = await fetchWithTimeout(url, webFetchTimeoutMs, {
     headers: {
       "User-Agent": "Mozilla/5.0",
     },
@@ -1258,6 +1287,8 @@ function extractInterests(text) {
 }
 
 function extractDegreePreference(text) {
+  if (/还不确定学硕专硕|还没想好学硕专硕|学硕专硕还没想好|学硕专硕暂时不确定/.test(text)) return "";
+  if (/学硕专硕都可以|学硕专硕都能接受|学硕专硕都行/.test(text)) return "都可以";
   if (text.includes("都可以")) return "都可以";
   if (/不排斥专硕|能接受专硕|专硕也可以/.test(text)) return "都可以";
   if (/不排斥学硕|学硕也可以/.test(text)) return "都可以";
@@ -1285,4 +1316,23 @@ function truncate(text, maxLength) {
 
 function dedupe(values) {
   return [...new Set(values.filter(Boolean))];
+}
+
+async function fetchWithTimeout(url, timeoutMs, options = {}) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+
+  try {
+    return await fetch(url, {
+      ...options,
+      signal: controller.signal,
+    });
+  } catch (error) {
+    if (error.name === "AbortError") {
+      throw new Error(`Request timed out after ${timeoutMs}ms`);
+    }
+    throw error;
+  } finally {
+    clearTimeout(timer);
+  }
 }
