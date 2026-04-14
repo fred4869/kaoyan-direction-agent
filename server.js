@@ -90,7 +90,7 @@ app.post("/api/chat", async (req, res) => {
 
     const assistantMessage = dashscopeApiKey
       ? await generateDashScopeReply(session, userMessage)
-      : generateLocalReply(session);
+      : generateLocalReply(session, userMessage);
 
     const assistantEntry = { role: "assistant", content: assistantMessage, timestamp: Date.now() };
     session.conversationLog.push(assistantEntry);
@@ -845,7 +845,7 @@ async function generateDashScopeReply(session, userMessage) {
   }
 
   const data = await response.json();
-  return data.choices?.[0]?.message?.content?.trim() || generateLocalReply(session);
+  return data.choices?.[0]?.message?.content?.trim() || generateLocalReply(session, userMessage);
 }
 
 function buildSystemPrompt(session) {
@@ -885,7 +885,7 @@ function buildSystemPrompt(session) {
   ].join("\n");
 }
 
-function generateLocalReply(session) {
+function generateLocalReply(session, userMessage = "") {
   if (!session.flags.profile_ready) {
     return "我先不急着给学校。就目前信息，我还缺几项会显著影响判断的内容：一是你现在在年级和排名大概处于什么位置；二是数学和英语分别到什么水平；三是你更倾向留江苏还是能接受外地。把这三项补齐后，我就能开始收缩方向。";
   }
@@ -901,6 +901,10 @@ function generateLocalReply(session) {
     return `我已经能给出第一批候选了，当前比较贴近你的有 ${top}。但我还不想过早定结论，因为还有 ${missing || "几个关键信息"} 没确认，它们会继续改变排序。你下一条直接补这部分，我再把建议收紧。`;
   }
 
+  if (shouldDeepDiveRecommendation(userMessage)) {
+    return buildRecommendationDeepDive(session, userMessage);
+  }
+
   const topMatch = session.recommendations?.match?.[0];
   const openQuestions = session.workingMemory.openQuestions;
 
@@ -909,6 +913,57 @@ function generateLocalReply(session) {
   }
 
   return `基于目前信息，我已经形成分层建议。你现在最值得优先深挖的是 ${topMatch ? `${topMatch.school}${topMatch.program}` : "匹配档项目"}。如果你愿意，我下一轮可以继续把每个候选拆开讲清楚：考试科目难点、读研体验、就业出口、以及为什么它比另外几个更适合你。`;
+}
+
+function shouldDeepDiveRecommendation(text) {
+  return /我愿意|继续|展开|详细说|具体说|细讲|讲讲|为什么|对比|比较|拆开讲|看看细节|行|好/.test(text);
+}
+
+function buildRecommendationDeepDive(session, userMessage) {
+  const topMatch = session.recommendations?.match?.[0] || session.candidatePrograms[0];
+  const secondMatch = session.recommendations?.match?.[1] || session.candidatePrograms[1];
+
+  if (!topMatch) {
+    return "我可以继续展开，但你这边还没有形成稳定候选。你先把绩点/排名、英语数学、地域和学位接受度补齐，我再给你拆开讲。";
+  }
+
+  if (/对比|比较/.test(userMessage) && secondMatch) {
+    return [
+      `先对比你现在最该看的两个项目：${topMatch.school}${topMatch.program} 和 ${secondMatch.school}${secondMatch.program}。`,
+      `${topMatch.school}${topMatch.program}：考试科目是 ${topMatch.exam}，更适合你的原因是 ${topMatch.experience}${topMatch.employment}`,
+      `${secondMatch.school}${secondMatch.program}：考试科目是 ${secondMatch.exam}，它的特点是 ${secondMatch.experience}${secondMatch.employment}`,
+      "如果你更看重上岸稳妥，我会先保留前者；如果你更想保住学硕或研究延展性，再重点比较第二个。",
+    ].join("");
+  }
+
+  return [
+    `那我先把 ${topMatch.school}${topMatch.program} 拆开讲。`,
+    `考试科目上，它是 ${topMatch.exam}，对应你现在的基础，${inferExamFit(topMatch, session.profile)}`,
+    `读研体验上，${topMatch.experience}`,
+    `就业上，${topMatch.employment}`,
+    secondMatch
+      ? `它目前排在前面的原因，也在于它比 ${secondMatch.school}${secondMatch.program} 更贴合你现在“${session.profile.careerPreference || "当前目标"}、${session.profile.riskTolerance || "当前风险偏好"}”这组条件。`
+      : "它目前排在前面，是因为它和你当前画像的匹配度最高。 ",
+    "如果你继续，我下一条就把第二、第三个候选也拆开，并直接讲它们为什么排在这个项目后面。",
+  ].join("");
+}
+
+function inferExamFit(program, profile) {
+  const comments = [];
+  if (profile.mathLevel.includes("对数一有顾虑") && program.exam.includes("数一")) {
+    comments.push("它的主要压力点在数一，这会拉高你的复习成本");
+  } else if (profile.mathLevel && /数二/.test(program.exam)) {
+    comments.push("它对你现在更偏数二的状态相对友好");
+  }
+  if (profile.englishLevel.includes("偏弱") && /英一/.test(program.exam)) {
+    comments.push("英语一会比英语二更吃力一些");
+  } else if (profile.englishLevel && /英二/.test(program.exam)) {
+    comments.push("英语要求相对可控");
+  }
+  if (!comments.length) {
+    comments.push("整体科目结构和你当前基础没有明显硬冲突");
+  }
+  return comments.join("，") + "。";
 }
 
 function isRecommendationReady(profile) {

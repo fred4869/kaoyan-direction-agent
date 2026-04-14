@@ -104,13 +104,14 @@ textarea {
 }
 
 .chat-screen {
-  padding-bottom: 24px;
+  padding-bottom: 220px;
 }
 
 .messages {
   display: flex;
   flex-direction: column;
   gap: 14px;
+  padding-bottom: 24px;
 }
 
 .message {
