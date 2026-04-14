@@ -13,6 +13,7 @@ const port = Number(process.env.PORT || 3030);
 const dashscopeApiKey = process.env.DASHSCOPE_API_KEY || "";
 const dashscopeBaseUrl = (process.env.DASHSCOPE_BASE_URL || "https://dashscope.aliyuncs.com/compatible-mode/v1").replace(/\/+$/, "");
 const dashscopeModel = process.env.DASHSCOPE_MODEL || "qwen-max-latest";
+const allowRuleFallback = process.env.ALLOW_RULE_FALLBACK === "true";
 const defaultSessionId = process.env.DEFAULT_SESSION_ID || "primary";
 const dataDir = path.join(__dirname, "data");
 const sessionsDir = path.join(dataDir, "sessions");
@@ -34,8 +35,10 @@ app.get("/api/health", (_req, res) => {
   res.json({
     ok: true,
     modelConfigured: Boolean(dashscopeApiKey),
+    localFallbackEnabled: allowRuleFallback,
     model: dashscopeModel,
     baseUrl: dashscopeBaseUrl,
+    chatMode: dashscopeApiKey ? "llm" : allowRuleFallback ? "local-fallback" : "misconfigured",
   });
 });
 
@@ -74,6 +77,12 @@ app.post("/api/chat", async (req, res) => {
 
     if (!userMessage) {
       return res.status(400).json({ error: "message is required" });
+    }
+
+    if (!dashscopeApiKey && !allowRuleFallback) {
+      return res.status(503).json({
+        error: "LLM 未配置：请在服务环境中设置 DASHSCOPE_API_KEY。当前服务已禁止退回写死规则回复。",
+      });
     }
 
     const session = getOrCreateSession(sessionId);

@@ -46,7 +46,15 @@ npm run dev
 
 ## 说明
 
-未配置 `DASHSCOPE_API_KEY` 时，应用会退回到本地规则引擎，便于界面联调，但不会调用真实大模型。
+默认必须配置 `DASHSCOPE_API_KEY` 才能对话。
+
+如果你只是本地联调界面，可以显式设置：
+
+```bash
+ALLOW_RULE_FALLBACK=true
+```
+
+这样服务才会退回到本地规则引擎。线上环境不建议开启，否则会表现得像“能聊天”，但实际上没有真正的大语言模型理解能力。
 
 会话和画像会保存到本地文件 [data/primary-session.json](/Users/alfred/codex/kaoyan-agent/data/primary-session.json)。服务重启后仍可继续，适合单用户长期使用。
 
