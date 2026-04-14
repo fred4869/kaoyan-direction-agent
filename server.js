@@ -86,19 +86,25 @@ app.post("/api/chat", async (req, res) => {
     }
 
     const session = getOrCreateSession(sessionId);
-    const researchUpdates = queueResearchFromMessage(session, userMessage);
     const userEntry = { role: "user", content: userMessage, timestamp: Date.now() };
     session.conversationLog.push(userEntry);
     session.conversationWindow.push(userEntry);
 
+    let llmTurn = null;
+    if (dashscopeApiKey) {
+      llmTurn = await analyzeDashScopeTurn(session, userMessage);
+      applyLLMProfileUpdates(session, llmTurn);
+    }
+
     updateSessionFromMessage(session, userMessage);
+    const researchUpdates = queueResearch(session, userMessage, llmTurn?.researchRequests || []);
     maybeUnlockCandidates(session);
     maybeUnlockRecommendations(session);
     refreshWorkingMemory(session);
     refreshCaseWorkspace(session, { latestUserMessage: userMessage, researchUpdates });
 
     const assistantMessage = dashscopeApiKey
-      ? await generateDashScopeReply(session, userMessage)
+      ? await composeDashScopeReply(session, userMessage, llmTurn)
       : generateLocalReply(session, userMessage);
 
     const assistantEntry = { role: "assistant", content: assistantMessage, timestamp: Date.now() };
@@ -828,7 +834,7 @@ function summarizeMessages(messages) {
     .join(" ");
 }
 
-async function generateDashScopeReply(session, userMessage) {
+async function analyzeDashScopeTurn(session, userMessage) {
   const response = await fetch(`${dashscopeBaseUrl}/chat/completions`, {
     method: "POST",
     headers: {
@@ -837,13 +843,52 @@ async function generateDashScopeReply(session, userMessage) {
     },
     body: JSON.stringify({
       model: dashscopeModel,
-      temperature: 0.4,
+      temperature: 0.1,
+      response_format: { type: "json_object" },
       messages: [
-        { role: "system", content: buildSystemPrompt(session) },
+        {
+          role: "system",
+          content: buildLLMExtractionPrompt(session),
+        },
         ...session.conversationWindow.slice(-8).map((item) => ({
           role: item.role,
           content: item.content,
         })),
+        { role: "user", content: userMessage },
+      ],
+    }),
+  });
+
+  if (!response.ok) {
+    const text = await response.text();
+    throw new Error(`DashScope extraction failed: ${response.status} ${text}`);
+  }
+
+  const data = await response.json();
+  const rawContent = data.choices?.[0]?.message?.content?.trim() || "{}";
+  return parseDashScopeJson(rawContent);
+}
+
+async function composeDashScopeReply(session, userMessage, llmTurn) {
+  const response = await fetch(`${dashscopeBaseUrl}/chat/completions`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${dashscopeApiKey}`,
+    },
+    body: JSON.stringify({
+      model: dashscopeModel,
+      temperature: 0.35,
+      messages: [
+        { role: "system", content: buildSystemPrompt(session, llmTurn) },
+        ...session.conversationWindow.slice(-8).map((item) => ({
+          role: item.role,
+          content: item.content,
+        })),
+        {
+          role: "user",
+          content: buildReplyUserPrompt(userMessage, llmTurn),
+        },
       ],
     }),
   });
@@ -857,7 +902,7 @@ async function generateDashScopeReply(session, userMessage) {
   return data.choices?.[0]?.message?.content?.trim() || generateLocalReply(session, userMessage);
 }
 
-function buildSystemPrompt(session) {
+function buildSystemPrompt(session, llmTurn) {
   const archiveSummary = session.conversationArchive
     .slice(-3)
     .map((item, index) => `摘要${index + 1}：${item.summary}`)
@@ -878,6 +923,12 @@ function buildSystemPrompt(session) {
         `待确认：${session.workingMemory.openQuestions.join("；") || "暂无"}`,
         `阶段摘要：${session.workingMemory.latestSummary}`,
       ].join("\n"),
+    "结构化理解：\n" +
+      [
+        `用户当前意图：${llmTurn?.userIntent || "待补"}`,
+        `本轮关键信号：${(llmTurn?.salientSignals || []).join("；") || "暂无"}`,
+        `建议动作：${llmTurn?.replyMode || "normal"}`,
+      ].join("\n"),
     "历史压缩摘要：\n" + (archiveSummary || "暂无"),
     "候选项目（如果已有）：\n" +
       (session.candidatePrograms.length
@@ -891,7 +942,122 @@ function buildSystemPrompt(session) {
     "2. 先口头判断，再明确你还需要确认什么。",
     "3. 如果推荐学校，优先解释为什么适合或不适合。",
     "4. 回复使用中文。",
+    "5. 你是真正负责对话的主顾问，不要重复模板句，优先针对用户刚刚那句话继续推进。",
   ].join("\n");
+}
+
+function buildLLMExtractionPrompt(session) {
+  return [
+    "你是考研规划对话系统的结构化理解模块。",
+    "你的任务是读取用户刚刚的话，并输出严格 JSON，不要输出任何解释。",
+    "你必须识别：用户当前意图、画像更新、风险偏好、地域偏好、方向偏好、研究请求、对上一轮建议的跟进动作。",
+    "如果用户只是确认、要求比较、要求总结、提出新约束，也要识别出来。",
+    "JSON schema:",
+    JSON.stringify({
+      userIntent: "clarify|compare|deep_dive|summary|re_rank|research|other",
+      replyMode: "ask|advance|compare|deep_dive|summary|rerank",
+      salientSignals: ["string"],
+      profileUpdates: {
+        year: "string",
+        gpa: "string",
+        ranking: "string",
+        mathLevel: "string",
+        englishLevel: "string",
+        degreePreference: "string",
+        careerPreference: "string",
+        riskTolerance: "string",
+        interests: ["string"],
+        locations: ["string"],
+        constraints: ["string"],
+        notes: ["string"],
+      },
+      researchRequests: [{ school: "string", program: "string" }],
+    }),
+    "只输出 JSON。缺失字段使用空字符串、空数组，不能省略顶层字段。",
+    "当前已有画像：",
+    buildProfileSummary(session.profile).join("；") || "暂无",
+  ].join("\n");
+}
+
+function buildReplyUserPrompt(userMessage, llmTurn) {
+  return [
+    `用户刚刚说：${userMessage}`,
+    `结构化意图：${llmTurn?.userIntent || "other"}`,
+    `建议回复模式：${llmTurn?.replyMode || "advance"}`,
+    `本轮信号：${(llmTurn?.salientSignals || []).join("；") || "暂无"}`,
+    "请基于当前已更新的画像、候选、研究队列和结论版本，给出下一句顾问回复。",
+  ].join("\n");
+}
+
+function parseDashScopeJson(rawContent) {
+  try {
+    return JSON.parse(rawContent);
+  } catch {
+    const match = rawContent.match(/\{[\s\S]*\}/);
+    if (match) {
+      try {
+        return JSON.parse(match[0]);
+      } catch {
+        return {
+          userIntent: "other",
+          replyMode: "advance",
+          salientSignals: [],
+          profileUpdates: defaultLLMProfileUpdates(),
+          researchRequests: [],
+        };
+      }
+    }
+    return {
+      userIntent: "other",
+      replyMode: "advance",
+      salientSignals: [],
+      profileUpdates: defaultLLMProfileUpdates(),
+      researchRequests: [],
+    };
+  }
+}
+
+function defaultLLMProfileUpdates() {
+  return {
+    year: "",
+    gpa: "",
+    ranking: "",
+    mathLevel: "",
+    englishLevel: "",
+    degreePreference: "",
+    careerPreference: "",
+    riskTolerance: "",
+    interests: [],
+    locations: [],
+    constraints: [],
+    notes: [],
+  };
+}
+
+function applyLLMProfileUpdates(session, llmTurn) {
+  const updates = { ...defaultLLMProfileUpdates(), ...(llmTurn?.profileUpdates || {}) };
+  const profile = session.profile;
+
+  if (updates.year) profile.year = updates.year;
+  if (updates.gpa) profile.gpa = updates.gpa;
+  if (updates.ranking) profile.ranking = updates.ranking;
+  if (updates.mathLevel) profile.mathLevel = updates.mathLevel;
+  if (updates.englishLevel) profile.englishLevel = updates.englishLevel;
+  if (updates.degreePreference) profile.degreePreference = updates.degreePreference;
+  if (updates.careerPreference) profile.careerPreference = updates.careerPreference;
+  if (updates.riskTolerance) profile.riskTolerance = updates.riskTolerance;
+  if (Array.isArray(updates.interests) && updates.interests.length) {
+    profile.interest = dedupe([...profile.interest, ...updates.interests]);
+  }
+  if (Array.isArray(updates.locations) && updates.locations.length) {
+    profile.locations = dedupe([...profile.locations, ...updates.locations]);
+  }
+  if (Array.isArray(updates.constraints) && updates.constraints.length) {
+    profile.constraints = dedupe([...profile.constraints, ...updates.constraints]);
+  }
+  if (Array.isArray(updates.notes) && updates.notes.length) {
+    profile.notes = dedupe([...(profile.notes || []), ...updates.notes]);
+  }
 }
 
 function generateLocalReply(session, userMessage = "") {
@@ -1392,10 +1558,9 @@ function buildRecommendations(candidates) {
   };
 }
 
-function queueResearchFromMessage(session, message) {
-  if (!hasResearchIntent(message)) return [];
-
-  const requests = extractResearchRequests(message);
+function queueResearch(session, message, extraRequests = []) {
+  const heuristicRequests = hasResearchIntent(message) ? extractResearchRequests(message) : [];
+  const requests = dedupeResearchRequests([...heuristicRequests, ...normalizeResearchRequests(extraRequests)]);
   if (!requests.length) return [];
 
   const queued = [];
@@ -1446,6 +1611,25 @@ function queueResearchFromMessage(session, message) {
   }
 
   return queued;
+}
+
+function normalizeResearchRequests(requests) {
+  if (!Array.isArray(requests)) return [];
+  return requests
+    .map((item) => ({
+      school: cleanSchoolName(item?.school || ""),
+      programKeyword: String(item?.program || item?.programKeyword || "").trim(),
+    }))
+    .filter((item) => item.school && item.programKeyword);
+}
+
+function dedupeResearchRequests(requests) {
+  const map = new Map();
+  for (const item of requests) {
+    const key = `${item.school}__${item.programKeyword}`;
+    map.set(key, item);
+  }
+  return [...map.values()];
 }
 
 function hasResearchIntent(message) {
