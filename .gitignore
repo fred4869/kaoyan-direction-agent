@@ -4,3 +4,4 @@ node_modules
 npm-debug.log*
 data/*-session.json
 data/session-store.json
+data/sessions/*.json

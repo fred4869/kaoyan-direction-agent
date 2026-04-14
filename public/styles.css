@@ -287,6 +287,15 @@ textarea {
   gap: 12px;
 }
 
+.workspace-section {
+  margin-top: 18px;
+}
+
+.workspace-section h3 {
+  margin: 0 0 10px;
+  font-size: 16px;
+}
+
 .summary-item,
 .candidate-card,
 .group-card {
@@ -294,6 +303,26 @@ textarea {
   border: 1px solid rgba(90, 66, 36, 0.08);
   border-radius: var(--radius-sm);
   padding: 14px;
+}
+
+.queue-card,
+.evidence-card,
+.snapshot-card {
+  background: rgba(255, 255, 255, 0.78);
+  border: 1px solid rgba(90, 66, 36, 0.08);
+  border-radius: var(--radius-sm);
+  padding: 14px;
+}
+
+.queue-status,
+.workspace-pill {
+  display: inline-flex;
+  margin-top: 10px;
+  padding: 6px 10px;
+  border-radius: 999px;
+  background: #f2e3d7;
+  color: var(--accent-strong);
+  font-size: 12px;
 }
 
 .candidate-card h3,

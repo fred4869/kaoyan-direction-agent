@@ -25,6 +25,7 @@
 
       <nav id="floatingActions" class="floating-actions hidden" aria-label="补充面板入口">
         <button id="openProfile" class="fab secondary hidden" type="button">查看我的画像</button>
+        <button id="openWorkspace" class="fab secondary hidden" type="button">查看工作台</button>
         <button id="openCandidates" class="fab secondary hidden" type="button">查看候选</button>
         <button id="openRecommendations" class="fab primary hidden" type="button">查看建议</button>
       </nav>
@@ -61,6 +62,33 @@
           <button class="icon-button" type="button" data-close="candidateSheet">关闭</button>
         </header>
         <div id="candidateList" class="card-list"></div>
+      </section>
+    </aside>
+
+    <aside id="workspaceSheet" class="sheet hidden" aria-hidden="true">
+      <div class="sheet-backdrop" data-close="workspaceSheet"></div>
+      <section class="sheet-panel">
+        <header class="sheet-header">
+          <h2>长期工作台</h2>
+          <button class="icon-button" type="button" data-close="workspaceSheet">关闭</button>
+        </header>
+        <div id="workspaceSummary" class="summary-list"></div>
+        <section class="workspace-section">
+          <h3>案例档案</h3>
+          <div id="workspaceCase" class="summary-list"></div>
+        </section>
+        <section class="workspace-section">
+          <h3>研究队列</h3>
+          <div id="workspaceQueue" class="card-list"></div>
+        </section>
+        <section class="workspace-section">
+          <h3>证据库</h3>
+          <div id="workspaceEvidence" class="card-list"></div>
+        </section>
+        <section class="workspace-section">
+          <h3>结论版本</h3>
+          <div id="workspaceSnapshots" class="card-list"></div>
+        </section>
       </section>
     </aside>
 

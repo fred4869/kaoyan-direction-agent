@@ -15,14 +15,14 @@ const dashscopeBaseUrl = (process.env.DASHSCOPE_BASE_URL || "https://dashscope.a
 const dashscopeModel = process.env.DASHSCOPE_MODEL || "qwen-max-latest";
 const defaultSessionId = process.env.DEFAULT_SESSION_ID || "primary";
 const dataDir = path.join(__dirname, "data");
-const sessionFilePath = path.join(dataDir, `${defaultSessionId}-session.json`);
+const sessionsDir = path.join(dataDir, "sessions");
 const knowledgeBaseFilePath = path.join(dataDir, "knowledge-base.json");
 const maxWindowMessages = 10;
 const retainWindowMessages = 6;
 const webSearchTimeoutMs = Number(process.env.WEB_SEARCH_TIMEOUT_MS || 3500);
 const webFetchTimeoutMs = Number(process.env.WEB_FETCH_TIMEOUT_MS || 3500);
 
-const primarySession = loadSession();
+const primarySession = loadSession(defaultSessionId);
 const sessionCache = new Map([[defaultSessionId, primarySession]]);
 let knowledgeBase = loadKnowledgeBase();
 const researchInFlight = new Set();
@@ -77,7 +77,7 @@ app.post("/api/chat", async (req, res) => {
     }
 
     const session = getOrCreateSession(sessionId);
-    const researchUpdates = queueResearchFromMessage(userMessage);
+    const researchUpdates = queueResearchFromMessage(session, userMessage);
     const userEntry = { role: "user", content: userMessage, timestamp: Date.now() };
     session.conversationLog.push(userEntry);
     session.conversationWindow.push(userEntry);
@@ -86,6 +86,7 @@ app.post("/api/chat", async (req, res) => {
     maybeUnlockCandidates(session);
     maybeUnlockRecommendations(session);
     refreshWorkingMemory(session);
+    refreshCaseWorkspace(session, { latestUserMessage: userMessage, researchUpdates });
 
     const assistantMessage = dashscopeApiKey
       ? await generateDashScopeReply(session, userMessage)
@@ -96,6 +97,7 @@ app.post("/api/chat", async (req, res) => {
     session.conversationWindow.push(assistantEntry);
     compressConversation(session);
     refreshWorkingMemory(session);
+    refreshCaseWorkspace(session, { latestUserMessage: userMessage, researchUpdates, assistantMessage });
     persistSession(session);
 
     res.json({
@@ -115,7 +117,7 @@ app.listen(port, () => {
   console.log(`Kaoyan agent running at http://localhost:${port}`);
 });
 
-function createSession() {
+function createSession(sessionId = defaultSessionId) {
   const initialMessage = {
     role: "assistant",
     content:
@@ -124,6 +126,7 @@ function createSession() {
   };
 
   return {
+    id: sessionId,
     stage: "初始建档",
     flags: {
       profile_ready: false,
@@ -160,6 +163,28 @@ function createSession() {
     },
     candidatePrograms: [],
     recommendations: null,
+    caseWorkspace: {
+      studentCase: {
+        title: "河海大学物理专业考研案例",
+        objective: "在几天到几周内持续收集信息，逐步收敛到最适合的考研方向与院校组合。",
+        stableProfile: ["本科背景：河海大学 物理专业"],
+        evolvingPreferences: [],
+        constraints: [],
+        unknowns: ["当前年级", "绩点或排名", "数学基础", "英语基础", "地域偏好", "学位接受度"],
+        timeline: [
+          {
+            id: `timeline-${Date.now()}`,
+            timestamp: new Date().toISOString(),
+            type: "session_created",
+            summary: "已创建新的长期规划案例。",
+          },
+        ],
+      },
+      evidenceVault: [],
+      researchQueue: [],
+      decisionSnapshots: [],
+      lastRecommendationHash: "",
+    },
     updatedAt: new Date().toISOString(),
   };
 }
@@ -169,16 +194,17 @@ function getOrCreateSession(sessionId) {
     return sessionCache.get(sessionId);
   }
 
-  const session = createSession();
+  const session = loadSession(sessionId);
   sessionCache.set(sessionId, session);
   return session;
 }
 
-function loadSession() {
+function loadSession(sessionId = defaultSessionId) {
   ensureDataDir();
+  const sessionFilePath = getSessionFilePath(sessionId);
 
   if (!fs.existsSync(sessionFilePath)) {
-    const seed = createSession();
+    const seed = createSession(sessionId);
     writeSession(seed);
     return seed;
   }
@@ -187,7 +213,7 @@ function loadSession() {
     const raw = fs.readFileSync(sessionFilePath, "utf8");
     return normalizeSession(JSON.parse(raw));
   } catch {
-    const seed = createSession();
+    const seed = createSession(sessionId);
     writeSession(seed);
     return seed;
   }
@@ -245,19 +271,27 @@ function persistKnowledgeBase() {
 
 function persistSession(session) {
   const normalized = normalizeSession(session);
-  if (session === primarySession) {
-    writeSession(normalized);
-  }
+  writeSession(normalized);
 }
 
 function writeSession(session) {
   ensureDataDir();
+  const sessionFilePath = getSessionFilePath(session.id || defaultSessionId);
   session.updatedAt = new Date().toISOString();
   fs.writeFileSync(sessionFilePath, JSON.stringify(session, null, 2), "utf8");
 }
 
 function ensureDataDir() {
   fs.mkdirSync(dataDir, { recursive: true });
+  fs.mkdirSync(sessionsDir, { recursive: true });
+}
+
+function getSessionFilePath(sessionId) {
+  return path.join(sessionsDir, `${sanitizeSessionId(sessionId)}.json`);
+}
+
+function sanitizeSessionId(sessionId) {
+  return String(sessionId || defaultSessionId).replace(/[^a-zA-Z0-9-_]/g, "_");
 }
 
 function normalizeSession(session) {
@@ -265,7 +299,8 @@ function normalizeSession(session) {
     return createSession();
   }
 
-  const normalized = createSession();
+  const normalized = createSession(session.id || defaultSessionId);
+  normalized.id = session.id || normalized.id;
   normalized.stage = session.stage || normalized.stage;
   normalized.flags = session.flags || normalized.flags;
   normalized.panels_available = session.panels_available || normalized.panels_available;
@@ -277,12 +312,22 @@ function normalizeSession(session) {
   normalized.conversationWindow = session.conversationWindow || session.messages || normalized.conversationWindow;
   normalized.conversationArchive = session.conversationArchive || normalized.conversationArchive;
   normalized.workingMemory = session.workingMemory || normalized.workingMemory;
+  normalized.caseWorkspace = {
+    ...normalized.caseWorkspace,
+    ...(session.caseWorkspace || {}),
+    studentCase: {
+      ...normalized.caseWorkspace.studentCase,
+      ...((session.caseWorkspace && session.caseWorkspace.studentCase) || {}),
+    },
+  };
   refreshWorkingMemory(normalized);
+  refreshCaseWorkspace(normalized, { latestUserMessage: "", researchUpdates: [] });
   return normalized;
 }
 
 function buildSessionPayload(session) {
   return {
+    sessionId: session.id,
     stage: session.stage,
     profile: {
       summary: buildProfileSummary(session.profile),
@@ -301,7 +346,267 @@ function buildSessionPayload(session) {
       archiveCount: session.workingMemory.archiveCount,
       compressedTurns: session.workingMemory.compressedTurns,
     },
+    workspace: buildWorkspacePayload(session),
   };
+}
+
+function buildWorkspacePayload(session) {
+  const workspace = session.caseWorkspace;
+  return {
+    studentCase: workspace.studentCase,
+    evidenceVault: workspace.evidenceVault.slice(0, 24),
+    researchQueue: workspace.researchQueue.slice(0, 20),
+    decisionSnapshots: workspace.decisionSnapshots.slice(0, 12),
+    summary: {
+      stableProfileCount: workspace.studentCase.stableProfile.length,
+      evidenceCount: workspace.evidenceVault.length,
+      researchQueueCount: workspace.researchQueue.length,
+      pendingResearchCount: workspace.researchQueue.filter((item) => item.status !== "done").length,
+      snapshotCount: workspace.decisionSnapshots.length,
+    },
+  };
+}
+
+function refreshCaseWorkspace(session, { latestUserMessage = "", researchUpdates = [], assistantMessage = "" }) {
+  const workspace = session.caseWorkspace;
+  const studentCase = workspace.studentCase;
+
+  studentCase.stableProfile = buildProfileSummary(session.profile);
+  studentCase.evolvingPreferences = [
+    session.profile.degreePreference ? `学位接受度：${session.profile.degreePreference}` : "",
+    session.profile.careerPreference ? `目标导向：${session.profile.careerPreference}` : "",
+    session.profile.riskTolerance ? `风险偏好：${session.profile.riskTolerance}` : "",
+    session.profile.interest.length ? `方向偏好：${session.profile.interest.join("、")}` : "",
+    session.profile.locations.length ? `地域范围：${session.profile.locations.join("、")}` : "",
+  ].filter(Boolean);
+  studentCase.constraints = session.profile.constraints.slice(0, 12);
+  studentCase.unknowns = session.workingMemory.openQuestions.slice(0, 12);
+  studentCase.lastUpdatedAt = new Date().toISOString();
+
+  if (latestUserMessage) {
+    pushTimelineEvent(session, {
+      type: "user_update",
+      summary: `学生补充：${truncate(latestUserMessage, 120)}`,
+      dedupeKey: `user:${latestUserMessage}`,
+    });
+  }
+
+  if (assistantMessage) {
+    pushTimelineEvent(session, {
+      type: "assistant_update",
+      summary: `顾问判断：${truncate(assistantMessage, 120)}`,
+      dedupeKey: `assistant:${assistantMessage}`,
+    });
+  }
+
+  syncEvidenceVault(session, researchUpdates);
+  syncResearchQueue(session, latestUserMessage, researchUpdates);
+  maybeCreateDecisionSnapshot(session);
+  trimWorkspace(session);
+}
+
+function pushTimelineEvent(session, { type, summary, dedupeKey }) {
+  const timeline = session.caseWorkspace.studentCase.timeline;
+  const last = timeline[timeline.length - 1];
+  if (last?.dedupeKey === dedupeKey) return;
+
+  timeline.push({
+    id: `timeline-${Date.now()}-${Math.random().toString(16).slice(2, 8)}`,
+    timestamp: new Date().toISOString(),
+    type,
+    summary,
+    dedupeKey,
+  });
+}
+
+function syncEvidenceVault(session, researchUpdates) {
+  const evidenceVault = session.caseWorkspace.evidenceVault;
+
+  for (const item of session.candidatePrograms.slice(0, 5)) {
+    upsertEvidenceItem(evidenceVault, {
+      id: `candidate-${item.school}-${item.program}`,
+      title: `${item.school} ${item.program}`,
+      kind: "candidate",
+      summary: `候选项目，${item.degreeType}，考试科目 ${item.exam}，当前匹配分 ${item.score}。${item.experience}`,
+      sourceType: item.sourceType,
+      sourceUrl: item.sourceUrl,
+      verifiedYear: item.verifiedYear,
+      status: "active",
+      relevance: "high",
+      updatedAt: new Date().toISOString(),
+    });
+  }
+
+  const recommendationPrograms = [
+    ...(session.recommendations?.match || []),
+    ...(session.recommendations?.sprint || []),
+    ...(session.recommendations?.safe || []),
+  ];
+  for (const item of recommendationPrograms.slice(0, 6)) {
+    upsertEvidenceItem(evidenceVault, {
+      id: `recommendation-${item.school}-${item.program}`,
+      title: `${item.school} ${item.program}`,
+      kind: "recommendation",
+      summary: `当前进入${classifyRecommendationBucket(session.recommendations, item)}档。就业：${item.employment} 体验：${item.experience}`,
+      sourceType: item.sourceType,
+      sourceUrl: item.sourceUrl,
+      verifiedYear: item.verifiedYear,
+      status: "active",
+      relevance: "high",
+      updatedAt: new Date().toISOString(),
+    });
+  }
+
+  for (const update of researchUpdates) {
+    const record = update.record;
+    upsertEvidenceItem(evidenceVault, {
+      id: `research-${update.school}-${update.program}`,
+      title: `${update.school} ${update.program}`,
+      kind: "research",
+      summary:
+        update.status === "queued"
+          ? "已排入后台核验，等待官方来源或较高可信度来源补录。"
+          : record
+            ? `已补录到知识库。来源：${record.sourceType}，年份：${record.verifiedYear || "待补"}。`
+            : update.message || "研究任务已创建。",
+      sourceType: record?.sourceType || "pending",
+      sourceUrl: record?.sourceUrl || "",
+      verifiedYear: record?.verifiedYear || "",
+      status: update.status === "queued" ? "pending" : "active",
+      relevance: "medium",
+      updatedAt: new Date().toISOString(),
+    });
+  }
+}
+
+function upsertEvidenceItem(evidenceVault, next) {
+  const index = evidenceVault.findIndex((item) => item.id === next.id);
+  if (index >= 0) {
+    evidenceVault[index] = { ...evidenceVault[index], ...next };
+  } else {
+    evidenceVault.unshift(next);
+  }
+}
+
+function syncResearchQueue(session, latestUserMessage, researchUpdates) {
+  const queue = session.caseWorkspace.researchQueue;
+  const now = new Date().toISOString();
+
+  for (const question of session.workingMemory.openQuestions.slice(0, 6)) {
+    upsertResearchTask(queue, {
+      id: `question-${question}`,
+      subject: question,
+      status: "pending",
+      priority: inferQuestionPriority(question),
+      reason: "这是当前最影响判断准确性的缺口信息之一。",
+      createdAt: now,
+      updatedAt: now,
+    });
+  }
+
+  for (const update of researchUpdates) {
+    upsertResearchTask(queue, {
+      id: `research-${update.school}-${update.program}`,
+      subject: `${update.school} ${update.program}`,
+      status: update.status === "queued" ? "in_progress" : update.status === "updated" ? "done" : "blocked",
+      priority: "high",
+      reason: update.message || "由聊天中新增的学校/专业触发。",
+      createdAt: now,
+      updatedAt: now,
+    });
+  }
+
+  if (/导师|复试|就业|城市|学费|住宿/.test(latestUserMessage || "")) {
+    upsertResearchTask(queue, {
+      id: `topic-${truncate(latestUserMessage, 36)}`,
+      subject: truncate(latestUserMessage, 36),
+      status: "pending",
+      priority: "medium",
+      reason: "学生主动提出了新的决策主题，需要补证据后再判断。",
+      createdAt: now,
+      updatedAt: now,
+    });
+  }
+
+  const openSet = new Set(session.workingMemory.openQuestions);
+  for (const item of queue) {
+    if (item.id.startsWith("question-") && !openSet.has(item.subject)) {
+      item.status = "done";
+      item.updatedAt = now;
+    }
+  }
+}
+
+function upsertResearchTask(queue, next) {
+  const index = queue.findIndex((item) => item.id === next.id);
+  if (index >= 0) {
+    queue[index] = { ...queue[index], ...next };
+  } else {
+    queue.unshift(next);
+  }
+}
+
+function inferQuestionPriority(question) {
+  if (/绩点|排名|数学|英语/.test(question)) return "high";
+  if (/学硕|专硕|就业|科研|风险偏好/.test(question)) return "high";
+  return "medium";
+}
+
+function maybeCreateDecisionSnapshot(session) {
+  const workspace = session.caseWorkspace;
+  const recommendationHash = JSON.stringify({
+    stage: session.stage,
+    match: (session.recommendations?.match || []).map((item) => `${item.school}${item.program}`),
+    sprint: (session.recommendations?.sprint || []).map((item) => `${item.school}${item.program}`),
+    safe: (session.recommendations?.safe || []).map((item) => `${item.school}${item.program}`),
+    openQuestions: session.workingMemory.openQuestions,
+  });
+
+  if (workspace.lastRecommendationHash === recommendationHash) return;
+  if (!session.flags.profile_ready) return;
+
+  const snapshot = {
+    id: `snapshot-${Date.now()}-${Math.random().toString(16).slice(2, 8)}`,
+    createdAt: new Date().toISOString(),
+    stage: session.stage,
+    headline: buildSnapshotHeadline(session),
+    summary: session.workingMemory.latestSummary,
+    blockingQuestions: session.workingMemory.openQuestions.slice(0, 6),
+    recommendations: {
+      sprint: (session.recommendations?.sprint || []).map((item) => `${item.school}${item.program}`),
+      match: (session.recommendations?.match || []).map((item) => `${item.school}${item.program}`),
+      safe: (session.recommendations?.safe || []).map((item) => `${item.school}${item.program}`),
+    },
+  };
+
+  workspace.decisionSnapshots.unshift(snapshot);
+  workspace.lastRecommendationHash = recommendationHash;
+}
+
+function buildSnapshotHeadline(session) {
+  if (!session.flags.candidates_ready) {
+    return "画像仍在收集阶段，尚未形成稳定候选。";
+  }
+  if (!session.flags.recommendation_ready) {
+    const top = session.candidatePrograms.slice(0, 2).map((item) => `${item.school}${item.program}`).join("、");
+    return `已形成第一批候选：${top || "待补"}。`;
+  }
+  const topMatch = session.recommendations?.match?.[0];
+  return `当前最优先深挖的是 ${topMatch ? `${topMatch.school}${topMatch.program}` : "匹配档项目"}。`;
+}
+
+function classifyRecommendationBucket(recommendations, item) {
+  if (recommendations?.sprint?.some((entry) => entry.school === item.school && entry.program === item.program)) return "冲刺";
+  if (recommendations?.safe?.some((entry) => entry.school === item.school && entry.program === item.program)) return "保底";
+  return "匹配";
+}
+
+function trimWorkspace(session) {
+  const workspace = session.caseWorkspace;
+  workspace.studentCase.timeline = workspace.studentCase.timeline.slice(-40);
+  workspace.evidenceVault = workspace.evidenceVault.slice(0, 40);
+  workspace.researchQueue = workspace.researchQueue.slice(0, 30);
+  workspace.decisionSnapshots = workspace.decisionSnapshots.slice(0, 16);
 }
 
 function buildProfileSummary(profile) {
@@ -864,6 +1169,7 @@ function scoreCandidates(profile, programs) {
       const isJiangsuProgram = /南京|苏州/.test(item.city);
       const theoryHeavyExam = /量子力学|普物/.test(item.exam);
       const avoidsPurePhysics = profile.constraints.some((item) => /不想纯物理|不太想纯物理|不考虑纯物理/.test(item));
+      const sameSchool = item.school === profile.school;
 
       if (wantsJiangsu && isJiangsuProgram) score += 10;
       if (wantsJiangsu && !isJiangsuProgram) score -= strongJiangsuPreference ? 12 : 4;
@@ -878,11 +1184,14 @@ function scoreCandidates(profile, programs) {
       if (profile.careerPreference === "就业优先" && item.tags.includes("专硕")) score += 8;
       if (profile.careerPreference === "就业优先" && item.degreeType === "学硕") score -= 4;
       if (profile.careerPreference === "就业优先" && theoryHeavyExam) score -= 6;
+      if (profile.careerPreference === "就业优先，保留读博可能" && item.tags.includes("专硕")) score += 5;
+      if (profile.careerPreference === "就业优先，保留读博可能" && item.degreeType === "学硕") score += 1;
       if (profile.careerPreference === "科研/读博优先" && item.degreeType === "学硕") score += 8;
       if (profile.careerPreference === "科研/读博优先" && theoryHeavyExam) score += 4;
       if (profile.riskTolerance === "求稳" && item.difficulty <= 70) score += 10;
       if (profile.riskTolerance === "愿意冲" && item.difficulty >= 78) score += 8;
       if (avoidsPurePhysics && item.tags.includes("物理学")) score -= 18;
+      if (sameSchool) score -= 10;
       if (profile.mathLevel.includes("数一")) {
         if (item.exam.includes("数一")) score += 6;
       } else if (profile.mathLevel) {
@@ -920,7 +1229,7 @@ function buildRecommendations(candidates) {
   };
 }
 
-function queueResearchFromMessage(message) {
+function queueResearchFromMessage(session, message) {
   if (!hasResearchIntent(message)) return [];
 
   const requests = extractResearchRequests(message);
@@ -935,18 +1244,38 @@ function queueResearchFromMessage(message) {
     if (exists || researchInFlight.has(key)) continue;
 
     researchInFlight.add(key);
-    queued.push({
+    const queuedItem = {
       school: request.school,
       program: request.programKeyword,
       status: "queued",
       message: "已启动后台联网核验，当前回复不会等待检索完成。",
-    });
+    };
+    queued.push(queuedItem);
     void researchProgramAndUpdateKnowledgeBase({
       school: request.school,
       program: request.programKeyword,
     })
+      .then((result) => {
+        refreshCaseWorkspace(session, {
+          latestUserMessage: "",
+          researchUpdates: [result],
+        });
+        persistSession(session);
+      })
       .catch((error) => {
         console.error("Background research failed:", request.school, request.programKeyword, error);
+        refreshCaseWorkspace(session, {
+          latestUserMessage: "",
+          researchUpdates: [
+            {
+              school: request.school,
+              program: request.programKeyword,
+              status: "error",
+              message: error.message || "Research failed",
+            },
+          ],
+        });
+        persistSession(session);
       })
       .finally(() => {
         researchInFlight.delete(key);
@@ -1310,6 +1639,7 @@ function extractDegreePreference(text) {
 }
 
 function extractCareerPreference(text) {
+  if ((/就业|工作|薪资/.test(text)) && (/读博|科研/.test(text))) return "就业优先，保留读博可能";
   if (/读博|科研/.test(text)) return "科研/读博优先";
   if (/就业|工作|薪资/.test(text)) return "就业优先";
   if (/城市|生活/.test(text)) return "城市体验优先";

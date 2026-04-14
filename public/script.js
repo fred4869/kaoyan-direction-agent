@@ -9,13 +9,20 @@ const elements = {
   sendButton: document.querySelector("#sendButton"),
   floatingActions: document.querySelector("#floatingActions"),
   openProfile: document.querySelector("#openProfile"),
+  openWorkspace: document.querySelector("#openWorkspace"),
   openCandidates: document.querySelector("#openCandidates"),
   openRecommendations: document.querySelector("#openRecommendations"),
   profileSheet: document.querySelector("#profileSheet"),
   candidateSheet: document.querySelector("#candidateSheet"),
+  workspaceSheet: document.querySelector("#workspaceSheet"),
   recommendationSheet: document.querySelector("#recommendationSheet"),
   profileSummary: document.querySelector("#profileSummary"),
   candidateList: document.querySelector("#candidateList"),
+  workspaceSummary: document.querySelector("#workspaceSummary"),
+  workspaceCase: document.querySelector("#workspaceCase"),
+  workspaceQueue: document.querySelector("#workspaceQueue"),
+  workspaceEvidence: document.querySelector("#workspaceEvidence"),
+  workspaceSnapshots: document.querySelector("#workspaceSnapshots"),
   recommendationList: document.querySelector("#recommendationList"),
 };
 
@@ -29,6 +36,7 @@ const state = {
     recommendation_ready: false,
   },
   researchUpdates: [],
+  workspace: null,
 };
 
 init();
@@ -68,6 +76,7 @@ function bindEvents() {
   });
 
   elements.openProfile.addEventListener("click", () => openSheet(elements.profileSheet));
+  elements.openWorkspace.addEventListener("click", () => openSheet(elements.workspaceSheet));
   elements.openCandidates.addEventListener("click", () => openSheet(elements.candidateSheet));
   elements.openRecommendations.addEventListener("click", () => openSheet(elements.recommendationSheet));
 
@@ -127,6 +136,7 @@ function applySession(session) {
   state.messages = session.messages || state.messages;
   state.stage = session.stage || state.stage;
   state.flags = session.flags || state.flags;
+  state.workspace = session.workspace || state.workspace;
 
   renderMessages(state.messages);
   renderStage(session.stage);
@@ -159,16 +169,19 @@ function renderStage(stage) {
 
 function renderPanels(session) {
   const available = new Set(session.panels_available || []);
-  const shouldShowActions = available.size > 0;
+  const hasWorkspace = Boolean(session.workspace?.summary?.evidenceCount || session.workspace?.summary?.researchQueueCount || session.workspace?.summary?.snapshotCount || session.workspace?.studentCase);
+  const shouldShowActions = available.size > 0 || hasWorkspace;
 
   elements.floatingActions.classList.toggle("hidden", !shouldShowActions);
   elements.openProfile.classList.toggle("hidden", !available.has("profile"));
+  elements.openWorkspace.classList.toggle("hidden", !hasWorkspace);
   elements.openCandidates.classList.toggle("hidden", !available.has("candidates"));
   elements.openRecommendations.classList.toggle("hidden", !available.has("recommendations"));
 
   renderProfile(session.profile?.summary || []);
   renderCandidates(session.candidatePrograms || []);
   renderRecommendations(session.recommendations);
+  renderWorkspace(session.workspace);
 }
 
 function renderProfile(summary) {
@@ -243,6 +256,87 @@ function renderRecommendations(recommendations) {
   });
 }
 
+function renderWorkspace(workspace) {
+  elements.workspaceSummary.innerHTML = "";
+  elements.workspaceCase.innerHTML = "";
+  elements.workspaceQueue.innerHTML = "";
+  elements.workspaceEvidence.innerHTML = "";
+  elements.workspaceSnapshots.innerHTML = "";
+  if (!workspace) return;
+
+  const summaryLines = [
+    `稳定画像 ${workspace.summary?.stableProfileCount || 0} 条`,
+    `证据 ${workspace.summary?.evidenceCount || 0} 条`,
+    `研究任务 ${workspace.summary?.researchQueueCount || 0} 条`,
+    `待完成 ${workspace.summary?.pendingResearchCount || 0} 条`,
+    `结论版本 ${workspace.summary?.snapshotCount || 0} 条`,
+  ];
+  summaryLines.forEach((line) => {
+    const item = document.createElement("div");
+    item.className = "summary-item";
+    item.textContent = line;
+    elements.workspaceSummary.appendChild(item);
+  });
+
+  const caseLines = [
+    workspace.studentCase?.objective ? `目标：${workspace.studentCase.objective}` : "",
+    ...(workspace.studentCase?.stableProfile || []),
+    ...(workspace.studentCase?.evolvingPreferences || []),
+    ...((workspace.studentCase?.constraints || []).map((item) => `约束：${item}`)),
+    ...((workspace.studentCase?.unknowns || []).slice(0, 6).map((item) => `待确认：${item}`)),
+    ...((workspace.studentCase?.timeline || []).slice(-4).reverse().map((item) => `时间线：${item.summary}`)),
+  ].filter(Boolean);
+  caseLines.forEach((line) => {
+    const item = document.createElement("div");
+    item.className = "summary-item";
+    item.textContent = line;
+    elements.workspaceCase.appendChild(item);
+  });
+
+  (workspace.researchQueue || []).forEach((task) => {
+    const card = document.createElement("article");
+    card.className = "queue-card";
+    card.innerHTML = `
+      <strong>${escapeHtml(task.subject)}</strong>
+      <div class="candidate-meta">${escapeHtml(task.reason || "")}</div>
+      <span class="queue-status">${escapeHtml(task.priority || "medium")} · ${escapeHtml(task.status || "pending")}</span>
+    `;
+    elements.workspaceQueue.appendChild(card);
+  });
+
+  (workspace.evidenceVault || []).forEach((item) => {
+    const card = document.createElement("article");
+    card.className = "evidence-card";
+    card.innerHTML = `
+      <strong>${escapeHtml(item.title)}</strong>
+      <div class="candidate-meta">${escapeHtml(item.summary || "")}</div>
+      <div class="candidate-meta">来源：${escapeHtml(item.sourceType || "unknown")} · ${escapeHtml(String(item.verifiedYear || "待补"))}</div>
+      ${
+        item.sourceUrl
+          ? `<div class="candidate-meta"><a class="source-link" href="${escapeHtml(item.sourceUrl)}" target="_blank" rel="noreferrer">查看来源</a></div>`
+          : ""
+      }
+      <span class="workspace-pill">${escapeHtml(item.kind || "evidence")} · ${escapeHtml(item.status || "active")}</span>
+    `;
+    elements.workspaceEvidence.appendChild(card);
+  });
+
+  (workspace.decisionSnapshots || []).forEach((item) => {
+    const card = document.createElement("article");
+    card.className = "snapshot-card";
+    const groups = item.recommendations || {};
+    card.innerHTML = `
+      <strong>${escapeHtml(item.headline || "")}</strong>
+      <div class="candidate-meta">${escapeHtml(item.summary || "")}</div>
+      <div class="candidate-meta">冲刺：${escapeHtml((groups.sprint || []).join("、") || "暂无")}</div>
+      <div class="candidate-meta">匹配：${escapeHtml((groups.match || []).join("、") || "暂无")}</div>
+      <div class="candidate-meta">保底：${escapeHtml((groups.safe || []).join("、") || "暂无")}</div>
+      <div class="candidate-meta">待补：${escapeHtml((item.blockingQuestions || []).join("、") || "暂无")}</div>
+    `;
+    elements.workspaceSnapshots.appendChild(card);
+  });
+}
+
 function openSheet(sheet) {
   sheet.classList.remove("hidden");
   sheet.setAttribute("aria-hidden", "false");
@@ -267,6 +361,7 @@ function setSubmitting(isSubmitting) {
 async function resetConversation() {
   closeSheet(elements.profileSheet);
   closeSheet(elements.candidateSheet);
+  closeSheet(elements.workspaceSheet);
   closeSheet(elements.recommendationSheet);
   elements.messageInput.value = "";
   autoResize();
