@@ -901,8 +901,13 @@ function generateLocalReply(session, userMessage = "") {
     return `我已经能给出第一批候选了，当前比较贴近你的有 ${top}。但我还不想过早定结论，因为还有 ${missing || "几个关键信息"} 没确认，它们会继续改变排序。你下一条直接补这部分，我再把建议收紧。`;
   }
 
-  if (shouldDeepDiveRecommendation(userMessage)) {
-    return buildRecommendationDeepDive(session, userMessage);
+  if (shouldRefreshRecommendationSummary(userMessage)) {
+    return buildUpdatedRecommendationSummary(session, userMessage);
+  }
+
+  const followUpIntent = parseRecommendationFollowUpIntent(userMessage);
+  if (followUpIntent) {
+    return buildRecommendationFollowUp(session, followUpIntent, userMessage);
   }
 
   const topMatch = session.recommendations?.match?.[0];
@@ -915,24 +920,100 @@ function generateLocalReply(session, userMessage = "") {
   return `基于目前信息，我已经形成分层建议。你现在最值得优先深挖的是 ${topMatch ? `${topMatch.school}${topMatch.program}` : "匹配档项目"}。如果你愿意，我下一轮可以继续把每个候选拆开讲清楚：考试科目难点、读研体验、就业出口、以及为什么它比另外几个更适合你。`;
 }
 
-function shouldDeepDiveRecommendation(text) {
-  return /我愿意|继续|展开|详细说|具体说|细讲|讲讲|为什么|对比|比较|拆开讲|看看细节|行|好/.test(text);
+function parseRecommendationFollowUpIntent(text) {
+  if (!text) return "";
+  if (/为什么不推荐|为什么没推荐|为什么不是|为什么没把/.test(text)) return "why_not";
+  if (/换一组|换一批|还有别的|其他选择|别的选择/.test(text)) return "alternative";
+  if (/保底/.test(text)) return "safe";
+  if (/冲刺/.test(text)) return "sprint";
+  if (/第二个|第二所|第二个呢|下一个|第三个|第三所|还有呢/.test(text)) return "next";
+  if (/对比|比较/.test(text)) return "compare";
+  if (/我愿意|继续|展开|详细说|具体说|细讲|讲讲|为什么|拆开讲|看看细节|行|好/.test(text)) return "deep_dive";
+  return "";
 }
 
-function buildRecommendationDeepDive(session, userMessage) {
+function shouldRefreshRecommendationSummary(text) {
+  return /重新看|重新总结|再总结|总结一下|重新排|重排|如果我更想|如果我最后决定|不太想|不想纯物理|更想留/.test(text);
+}
+
+function buildRecommendationFollowUp(session, intent, userMessage) {
   const topMatch = session.recommendations?.match?.[0] || session.candidatePrograms[0];
   const secondMatch = session.recommendations?.match?.[1] || session.candidatePrograms[1];
+  const sprintPrograms = session.recommendations?.sprint || [];
+  const safePrograms = session.recommendations?.safe || [];
 
   if (!topMatch) {
     return "我可以继续展开，但你这边还没有形成稳定候选。你先把绩点/排名、英语数学、地域和学位接受度补齐，我再给你拆开讲。";
   }
 
-  if (/对比|比较/.test(userMessage) && secondMatch) {
+  if (intent === "compare" && secondMatch) {
     return [
       `先对比你现在最该看的两个项目：${topMatch.school}${topMatch.program} 和 ${secondMatch.school}${secondMatch.program}。`,
       `${topMatch.school}${topMatch.program}：考试科目是 ${topMatch.exam}，更适合你的原因是 ${topMatch.experience}${topMatch.employment}`,
       `${secondMatch.school}${secondMatch.program}：考试科目是 ${secondMatch.exam}，它的特点是 ${secondMatch.experience}${secondMatch.employment}`,
       "如果你更看重上岸稳妥，我会先保留前者；如果你更想保住学硕或研究延展性，再重点比较第二个。",
+    ].join("");
+  }
+
+  if (intent === "next" && secondMatch) {
+    const thirdMatch = session.recommendations?.match?.[2] || session.candidatePrograms[2];
+    return [
+      `那我接着讲排在后面的项目。第二个是 ${secondMatch.school}${secondMatch.program}。`,
+      `它的考试科目是 ${secondMatch.exam}，${inferExamFit(secondMatch, session.profile)}`,
+      `读研体验上，${secondMatch.experience}`,
+      `就业上，${secondMatch.employment}`,
+      thirdMatch ? `如果你还要继续，我下一条再把 ${thirdMatch.school}${thirdMatch.program} 也拆开，并直接比较它和第二个的差异。` : "如果你还要继续，我下一条就讲它为什么排在第一候选后面。",
+    ].join("");
+  }
+
+  if (intent === "safe") {
+    if (!safePrograms.length) {
+      return "你这轮画像下还没有特别稳的保底档项目，这通常说明你当前更适合先补一批更低难度院校，而不是直接在现有名单里硬选保底。";
+    }
+    return [
+      `先看保底档。目前我更建议重点留意 ${safePrograms.map((item) => `${item.school}${item.program}`).join("、")}。`,
+      ...safePrograms.slice(0, 2).map((item) => `${item.school}${item.program}：${item.exam}，${item.experience}${item.employment}`),
+      "这类项目的意义主要是兜住上岸底线，不一定是综合最优，但能防止你的候选池过于冒险。",
+    ].join("");
+  }
+
+  if (intent === "sprint") {
+    if (!sprintPrograms.length) {
+      return "你这轮画像下我暂时没有强推的冲刺档，因为你当前的风险偏好更偏求稳。如果你愿意提高难度预期，我可以再补一批冲刺项。";
+    }
+    return [
+      `先看冲刺档。目前最值得作为冲刺备选的是 ${sprintPrograms.map((item) => `${item.school}${item.program}`).join("、")}。`,
+      ...sprintPrograms.slice(0, 2).map((item) => `${item.school}${item.program}：${item.exam}，${item.experience}${item.employment}`),
+      "这些项目不是不能报，而是更适合放在你整体组合里的上沿位置，不应该替代匹配档。",
+    ].join("");
+  }
+
+  if (intent === "why_not") {
+    const firstNonTop = session.candidatePrograms.find(
+      (item) => `${item.school}${item.program}` !== `${topMatch.school}${topMatch.program}`,
+    );
+    if (!firstNonTop) {
+      return `目前没有明显比 ${topMatch.school}${topMatch.program} 更值得拿来反证的项目，所以它暂时还是最优先深挖的对象。`;
+    }
+    return [
+      `如果你是在问“为什么不是别的项目”，我先拿 ${firstNonTop.school}${firstNonTop.program} 举例。`,
+      `${topMatch.school}${topMatch.program} 目前排在它前面，主要是因为前者 ${topMatch.experience}${topMatch.employment}`,
+      `而 ${firstNonTop.school}${firstNonTop.program} 的短板在于 ${firstNonTop.experience}`,
+      "如果你改变风险偏好、地域范围或学位倾向，这个排序是可能变化的。",
+    ].join("");
+  }
+
+  if (intent === "alternative") {
+    const alternatives = session.candidatePrograms
+      .filter((item) => `${item.school}${item.program}` !== `${topMatch.school}${topMatch.program}`)
+      .slice(0, 3);
+    if (!alternatives.length) {
+      return "目前你的候选池还不够宽，我建议先扩充一批同层级院校，再谈换一组会更有意义。";
+    }
+    return [
+      "可以，我给你换成另一组值得留意的项目：",
+      ...alternatives.map((item) => `${item.school}${item.program}：${item.exam}，${item.experience}`),
+      "这组更适合当补充备选，而不是直接替代当前第一候选。",
     ].join("");
   }
 
@@ -946,6 +1027,24 @@ function buildRecommendationDeepDive(session, userMessage) {
       : "它目前排在前面，是因为它和你当前画像的匹配度最高。 ",
     "如果你继续，我下一条就把第二、第三个候选也拆开，并直接讲它们为什么排在这个项目后面。",
   ].join("");
+}
+
+function buildUpdatedRecommendationSummary(session, userMessage) {
+  const topMatch = session.recommendations?.match?.[0] || session.candidatePrograms[0];
+  const secondMatch = session.recommendations?.match?.[1] || session.candidatePrograms[1];
+  const safe = (session.recommendations?.safe || []).map((item) => `${item.school}${item.program}`).slice(0, 2).join("、");
+  const sprint = (session.recommendations?.sprint || []).map((item) => `${item.school}${item.program}`).slice(0, 2).join("、");
+
+  return [
+    `我按你刚补充的条件重新看了一遍。当前最优先深挖的仍然是 ${topMatch ? `${topMatch.school}${topMatch.program}` : "匹配档项目"}。`,
+    secondMatch ? `匹配档第二位是 ${secondMatch.school}${secondMatch.program}。` : "",
+    safe ? `保底档可以留意 ${safe}。` : "保底档目前还需要再补一批更稳的项目。",
+    sprint ? `如果你愿意保留冲刺位，可以看 ${sprint}。` : "",
+    `这次重排主要反映了你刚才提到的“${truncate(userMessage, 32)}”这个条件。`,
+    "如果你要，我下一条可以直接解释：这个新条件到底改变了哪几个项目的先后顺序。",
+  ]
+    .filter(Boolean)
+    .join("");
 }
 
 function inferExamFit(program, profile) {
